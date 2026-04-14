@@ -1,0 +1,16 @@
+#!/bin/sh
+# clang-format staged C/C++/Obj-C++ files in place, re-stage.
+
+if ! command -v clang-format >/dev/null 2>&1; then
+    echo "pre-commit: clang-format not found, skipping"
+    exit 0
+fi
+
+files=$(git diff --cached --name-only --diff-filter=ACMR |
+    grep -E '\.(cpp|cc|cxx|c|h|hpp|hh|mm|m)$' || true)
+[ -z "$files" ] && exit 0
+
+for f in $files; do
+    clang-format -i "$f"
+    git add "$f"
+done
