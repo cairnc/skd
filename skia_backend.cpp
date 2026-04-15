@@ -27,6 +27,8 @@
 #include "include/gpu/ganesh/gl/GrGLBackendSurface.h"
 #include "include/gpu/ganesh/gl/GrGLDirectContext.h"
 #include "include/gpu/ganesh/gl/GrGLInterface.h"
+#include "include/codec/SkCodec.h"
+#include "include/codec/SkPngDecoder.h"
 #include "include/docs/SkMultiPictureDocument.h"
 #include "include/core/SkPictureRecorder.h"
 
@@ -241,9 +243,53 @@ std::vector<PictureFrame> LoadPictures(const char *path)
         int n = SkMultiPictureDocument::ReadPageCount(stream.get());
         if (n <= 0)
             return frames;
+        // Android HWUI writes MSKPs with a "sharing" serial context: an
+        // image is PNG-encoded once on its first page, and subsequent
+        // pages reference it by a 4-byte in-file id (an index into a
+        // per-document dedupe table). Without the matching deserialize
+        // behavior, those id references can't be decoded and fall back
+        // to Skia's 1x1 placeholder — visible as broken image resources
+        // on every frame after the first. The shared image list must
+        // outlive the entire Read() call so ids resolve across pages.
+        // (Mirrors tools/SkSharingProc.cpp; inlined so we don't pull in
+        // Skia's tools/ cpp, which isn't part of libskia.a.)
+        struct SharingCtx
+        {
+            std::vector<sk_sp<SkImage>> images;
+        };
+        auto shared_ctx = std::make_unique<SharingCtx>();
+        SkDeserialProcs mskp_procs;
+        mskp_procs.fImageCtx = shared_ctx.get();
+        mskp_procs.fImageDataProc = [](sk_sp<SkData> data,
+                                       std::optional<SkAlphaType> alpha,
+                                       void *ctx) -> sk_sp<SkImage>
+        {
+            SharingCtx *c = static_cast<SharingCtx *>(ctx);
+            if (!data || data->empty())
+                return nullptr;
+            // 4-byte payload = in-file id referring to a prior image.
+            if (data->size() == sizeof(uint32_t))
+            {
+                uint32_t fid = 0;
+                data->copyRange(0, sizeof(fid), &fid);
+                if (fid >= c->images.size())
+                    return nullptr;
+                return c->images[fid];
+            }
+            // Otherwise the payload is a PNG; decode, register, return.
+            auto codec = SkPngDecoder::Decode(std::move(data), nullptr);
+            if (!codec)
+                return nullptr;
+            auto img = SkCodecs::DeferredImage(std::move(codec), alpha);
+            if (!img)
+                return nullptr;
+            img = img->makeRasterImage(nullptr);
+            c->images.push_back(img);
+            return img;
+        };
         std::vector<SkDocumentPage> pages(n);
         if (!SkMultiPictureDocument::Read(stream.get(), pages.data(), n,
-                                          &dprocs))
+                                          &mskp_procs))
             return frames;
         frames.reserve(n);
         for (const auto &p : pages)
@@ -823,18 +869,6 @@ class InterceptCanvas : public SkCanvas
             return;
         uint32_t id = img->uniqueID();
         if (seen_images.count(id))
-            return;
-        // Probe that the image can actually produce pixels. Skia hands us
-        // a placeholder (with a fresh uniqueID) when its deserializer
-        // can't decode the bytes — common for Android HWUI captures that
-        // embed GPU surface contents as raw pixels rather than an encoded
-        // format. These fail readPixels and clutter the Resources list.
-        // Keep valid 1x1 images (rare but legal).
-        uint32_t tmp = 0;
-        SkImageInfo probe_info = SkImageInfo::Make(1, 1, kRGBA_8888_SkColorType,
-                                                   kPremul_SkAlphaType);
-        SkPixmap probe(probe_info, &tmp, 4);
-        if (!img->readPixels(probe, 0, 0))
             return;
         seen_images.insert(id);
         resources.push_back({ResourceInfo::Image, id,
