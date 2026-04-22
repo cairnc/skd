@@ -72,7 +72,11 @@ target_include_directories(aosp_libui PUBLIC libui/include)
 target_link_libraries(aosp_libui PUBLIC
     aosp_platform aosp_libutils aosp_libbase aosp_libmath aosp_arect)
 
+# ---- Perfetto SF layer-trace protos ----
+add_subdirectory(perfetto_protos)
+
 # Convenience aggregate.
 add_library(aosp INTERFACE)
 target_link_libraries(aosp INTERFACE
-    aosp_libutils aosp_libbase aosp_libmath aosp_arect aosp_ftl aosp_libui)
+    aosp_libutils aosp_libbase aosp_libmath aosp_arect aosp_ftl aosp_libui
+    aosp_perfetto_protos)

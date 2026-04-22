@@ -64,8 +64,11 @@ endif()
 
 add_subdirectory(aosp)
 
-add_executable(layerviewer main.cpp)
+add_executable(layerviewer main.cpp layer_trace.cpp)
 target_link_libraries(layerviewer PRIVATE imgui SDL3::SDL3-static skia aosp)
+
+add_executable(make-fake-trace make_fake_trace.cpp)
+target_link_libraries(make-fake-trace PRIVATE aosp_perfetto_protos)
 
 if(APPLE)
     target_link_libraries(layerviewer PRIVATE
