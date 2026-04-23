@@ -82,6 +82,9 @@ add_library(aosp_shaders STATIC shaders/src/shaders.cpp)
 target_include_directories(aosp_shaders PUBLIC shaders/include)
 target_link_libraries(aosp_shaders PUBLIC aosp_platform aosp_libmath aosp_libui aosp_tonemap)
 
+# ---- libgui subset (gui/LayerState, gui/WindowInfo, gui/LayerMetadata) ----
+add_subdirectory(libgui)
+
 # ---- Perfetto SF layer-trace protos ----
 add_subdirectory(perfetto_protos)
 
@@ -98,4 +101,4 @@ add_subdirectory(surfaceflinger_frontend)
 add_library(aosp INTERFACE)
 target_link_libraries(aosp INTERFACE
     aosp_libutils aosp_libbase aosp_libmath aosp_arect aosp_ftl aosp_libui
-    aosp_perfetto_protos aosp_renderengine)
+    aosp_libgui aosp_perfetto_protos aosp_renderengine aosp_surfaceflinger_frontend)

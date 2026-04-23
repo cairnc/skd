@@ -1,7 +1,8 @@
-// Stub — FE holds sp<IWindowInfosReportedListener> fields; needs RefBase for
-// sp<> to work. Real impl is AIDL-generated.
+// Stub — LayerState.cpp reads sp<IWindowInfosReportedListener> from Parcel
+// via Parcel::readStrongBinder(sp<IBinder>*), so it must derive from IBinder
+// (not just RefBase) for the pointer to implicitly convert.
 #pragma once
-#include <utils/RefBase.h>
+#include <binder/Binder.h>
 namespace android::gui {
-class IWindowInfosReportedListener : public virtual RefBase {};
+class IWindowInfosReportedListener : public IBinder {};
 } // namespace android::gui

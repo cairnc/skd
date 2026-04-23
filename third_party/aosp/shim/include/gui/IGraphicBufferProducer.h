@@ -3,6 +3,7 @@
 // for all of them transitively through this header in real AOSP.
 #pragma once
 #include <binder/Binder.h>
+#include <binder/IInterface.h>
 #include <cstdint>
 #include <gui/HdrMetadata.h>
 #include <ui/Fence.h>

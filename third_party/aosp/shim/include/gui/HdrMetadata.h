@@ -27,6 +27,14 @@ struct HdrMetadata {
     float maxFrameAverageLightLevel = 0;
   } cta8613;
   std::vector<uint8_t> hdr10plus;
+
+  // Conservative equality — enough for layer_state_t::diff/merge to trigger
+  // on hdr10plus payload changes; fine-grained Smpte2086/Cta861_3 comparison
+  // is skipped since nothing the replayer reads mutates them at that
+  // granularity.
+  bool operator==(const HdrMetadata &o) const {
+    return validTypes == o.validTypes && hdr10plus == o.hdr10plus;
+  }
 };
 
 } // namespace android

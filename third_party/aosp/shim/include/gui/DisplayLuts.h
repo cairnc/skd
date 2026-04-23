@@ -1,14 +1,16 @@
-// DisplayLuts shim. We don't do binder IPC, so drop the Parcelable-ness and
-// keep just the data LayerSettings touches.
+// DisplayLuts shim. Upstream LayerState.cpp reads/writes std::shared_ptr
+// <DisplayLuts> via Parcel::writeParcelable, so we still have to look like
+// a Parcelable.
 #pragma once
 
 #include <android-base/unique_fd.h>
+#include <binder/Parcelable.h>
 #include <cstdint>
 #include <vector>
 
 namespace android::gui {
 
-struct DisplayLuts {
+struct DisplayLuts : public Parcelable {
   struct Entry {
     Entry() = default;
     Entry(int32_t d, int32_t s, int32_t k)

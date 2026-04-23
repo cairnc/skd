@@ -8,5 +8,9 @@ struct EdgeExtensionParameters : public Parcelable {
   bool extendRight = false;
   bool extendTop = false;
   bool extendBottom = false;
+  bool operator==(const EdgeExtensionParameters &o) const {
+    return extendLeft == o.extendLeft && extendRight == o.extendRight &&
+           extendTop == o.extendTop && extendBottom == o.extendBottom;
+  }
 };
 } // namespace android::gui

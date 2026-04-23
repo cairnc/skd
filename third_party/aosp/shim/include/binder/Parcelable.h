@@ -2,6 +2,8 @@
 // that fills defaults; every write is a no-op returning OK. Lets upstream
 // writeToParcel / readFromParcel bodies compile and link byte-identical.
 #pragma once
+#include <binder/Binder.h>
+#include <cutils/native_handle.h>
 #include <utils/Errors.h>
 #include <utils/String16.h>
 #include <utils/String8.h>
@@ -15,7 +17,6 @@
 
 namespace android {
 
-class IBinder;
 class Parcel;
 class Parcelable;
 
@@ -52,6 +53,11 @@ public:
   status_t writeNullableParcelable(const Parcelable *) { return OK; }
   status_t writeBlob(size_t, bool, void *) { return OK; }
   status_t write(const void *, size_t) { return OK; }
+  status_t writeNativeHandle(const void *) { return OK; }
+  status_t writeVectorSize(size_t) { return OK; }
+  template <typename T> status_t writeVectorSize(const std::vector<T> &) {
+    return OK;
+  }
   // Flattenable / user-type overload — FE passes Rect, etc.
   template <typename T,
             std::enable_if_t<!std::is_convertible_v<const T &, const void *>,
@@ -122,12 +128,26 @@ public:
   status_t readStrongBinder(sp<IBinder> *) const { return OK; }
   sp<IBinder> readStrongBinder() const { return nullptr; }
   status_t readNullableStrongBinder(sp<IBinder> *) const { return OK; }
+  // Templated overload — LayerState.cpp reads sp<IWindowInfosReportedListener>
+  // directly via readStrongBinder(sp<T>*). We produce nullptr under the hood.
+  template <typename T, std::enable_if_t<std::is_base_of_v<IBinder, T> &&
+                                             !std::is_same_v<T, IBinder>,
+                                         int> = 0>
+  status_t readStrongBinder(sp<T> *) const {
+    return OK;
+  }
   status_t readUtf8FromUtf16(std::string *) const { return OK; }
   status_t readByteVector(std::vector<uint8_t> *) const { return OK; }
   status_t readByteVector(std::vector<int8_t> *) const { return OK; }
   status_t readParcelable(Parcelable *) const { return OK; }
   status_t read(void *, size_t) const { return OK; }
   const void *readInplace(size_t) const { return nullptr; }
+  // readNativeHandle returns a raw native_handle_t* pointer upstream. We
+  // never materialize handles so return nullptr.
+  native_handle_t *readNativeHandle() const { return nullptr; }
+  size_t dataSize() const { return 0; }
+  size_t dataAvail() const { return 0; }
+  size_t dataPosition() const { return 0; }
   template <typename T,
             std::enable_if_t<!std::is_convertible_v<T &, void *>, int> = 0>
   status_t read(T &) const {

@@ -1,16 +1,19 @@
 # SurfaceFlinger FrontEnd port. Consumes transactions + layer traces and
 # produces LayerSnapshots that CompositionEngine drives.
 
-file(GLOB SF_FRONTEND_SRC CONFIGURE_DEPENDS FrontEnd/*.cpp)
+file(GLOB SF_FRONTEND_SRC CONFIGURE_DEPENDS FrontEnd/*.cpp Tracing/*.cpp)
+list(APPEND SF_FRONTEND_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/LayerProtoHelper.cpp
+)
 
 add_library(aosp_surfaceflinger_frontend STATIC ${SF_FRONTEND_SRC})
 target_include_directories(aosp_surfaceflinger_frontend PUBLIC
-    .           # so "FrontEnd/X.h" resolves
+    .           # so "FrontEnd/X.h" / "Tracing/X.h" / "LayerProtoHelper.h" resolve
     FrontEnd    # so sibling "RequestedLayerState.h" resolves
 )
 target_link_libraries(aosp_surfaceflinger_frontend PUBLIC
     aosp_platform
-    aosp_libutils aosp_libbase aosp_libmath aosp_ftl aosp_libui
+    aosp_libutils aosp_libbase aosp_libmath aosp_ftl aosp_libui aosp_libgui
     aosp_compositionengine aosp_renderengine
     aosp_perfetto_protos
 )

@@ -71,7 +71,7 @@ add_executable(make-fake-trace make_fake_trace.cpp)
 target_link_libraries(make-fake-trace PRIVATE aosp_perfetto_protos)
 
 add_executable(replay-trace replay_trace.cpp)
-target_link_libraries(replay-trace PRIVATE aosp_perfetto_protos)
+target_link_libraries(replay-trace PRIVATE aosp aosp_surfaceflinger_frontend aosp_libgui)
 
 if(APPLE)
     target_link_libraries(layerviewer PRIVATE

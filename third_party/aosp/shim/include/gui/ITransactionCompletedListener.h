@@ -1,10 +1,12 @@
-// ITransactionCompletedListener shim. In real AOSP this also transitively
-// surfaces gui::CachingHint + onTrustedPresentationChanged signatures, so
-// we pull them into the chain here.
+// ITransactionCompletedListener shim. Enough of the upstream type surface
+// (CallbackId + ListenerCallbacks) for byte-identical gui/LayerState.cpp to
+// build; we don't actually dispatch callbacks.
 #pragma once
 #include <android/gui/CachingHint.h>
 #include <binder/Binder.h>
 #include <cstdint>
+#include <unordered_set>
+#include <vector>
 
 namespace android {
 
@@ -23,7 +25,33 @@ struct CallbackId {
     return id == o.id && sp == o.sp && type == o.type;
   }
 };
-struct ListenerCallbacks {};
+
+struct CallbackIdHash {
+  size_t operator()(const CallbackId &c) const {
+    return std::hash<int64_t>{}(c.id) ^ std::hash<uint64_t>{}(c.sp);
+  }
+};
+
+class ListenerCallbacks {
+public:
+  ListenerCallbacks() = default;
+  ListenerCallbacks(
+      const sp<IBinder> &listener,
+      const std::unordered_set<CallbackId, CallbackIdHash> &callbacks)
+      : transactionCompletedListener(listener),
+        callbackIds(callbacks.begin(), callbacks.end()) {}
+  ListenerCallbacks(const sp<IBinder> &listener,
+                    const std::vector<CallbackId> &ids)
+      : transactionCompletedListener(listener), callbackIds(ids) {}
+
+  bool operator==(const ListenerCallbacks &rhs) const {
+    return transactionCompletedListener == rhs.transactionCompletedListener &&
+           callbackIds == rhs.callbackIds;
+  }
+
+  sp<IBinder> transactionCompletedListener;
+  std::vector<CallbackId> callbackIds;
+};
 
 // Hash functor for sp<IBinder> keys (used by TransactionHandler).
 struct IListenerHash {
