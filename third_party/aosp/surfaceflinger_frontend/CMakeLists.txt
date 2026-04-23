@@ -4,6 +4,7 @@
 file(GLOB SF_FRONTEND_SRC CONFIGURE_DEPENDS FrontEnd/*.cpp Tracing/*.cpp)
 list(APPEND SF_FRONTEND_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/LayerProtoHelper.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LayerFE.cpp
 )
 
 add_library(aosp_surfaceflinger_frontend STATIC ${SF_FRONTEND_SRC})

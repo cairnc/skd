@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <android/hardware_buffer.h> // AHARDWAREBUFFER_USAGE_*
@@ -47,12 +48,9 @@ public:
   };
 
   GraphicBuffer() = default;
+  // Out-of-line — eagerly creates + populates the GL texture in the cpp.
   GraphicBuffer(uint32_t w, uint32_t h, PixelFormat format, uint32_t layerCount,
-                uint64_t usage, std::string requestorName = {})
-      : mWidth(w), mHeight(h), mFormat(format), mLayerCount(layerCount),
-        mUsage(usage), mRequestor(std::move(requestorName)) {
-    mId = sNextId++;
-  }
+                uint64_t usage, std::string requestorName = {});
   ~GraphicBuffer() override; // defined in GraphicBuffer.cpp; frees GL tex
 
   uint32_t getWidth() const { return mWidth; }
@@ -79,10 +77,22 @@ public:
   struct ANativeWindowBuffer *getNativeBuffer() const { return nullptr; }
   static GraphicBuffer *from(struct ANativeWindowBuffer *) { return nullptr; }
 
-  // GL texture name. Allocated on first call; subsequent calls return the
-  // same id. The current GL context must be current when this is called.
+  // GL texture name. Created eagerly in the constructor when a GL context
+  // is current and a content populator has been installed (see below);
+  // otherwise allocated lazily on first call. Subsequent calls are cheap.
   unsigned int getOrCreateGLTexture();
   unsigned int getGLTextureIfAny() const { return mTextureId; }
+
+  // Content populator. Called once per GraphicBuffer, right after its GL
+  // texture is created, with (width, height, buffer_id, gl_texture_id) so
+  // the caller (layerviewer's main.cpp) can upload a procedural pattern —
+  // a checkerboard plus the id watermark — that stands in for the real
+  // SurfaceFlinger buffer content. The hook is optional: when unset the
+  // texture just stays at the zeros glTexImage2D(nullptr) gave it.
+  using ContentPopulator =
+      std::function<void(uint32_t width, uint32_t height, uint64_t bufferId,
+                         unsigned int glTextureId)>;
+  static void setContentPopulator(ContentPopulator);
 
   // GraphicBuffer IS AHardwareBuffer on Android (AHB is the public
   // type alias for the same gralloc handle). Our GraphicBuffer isn't

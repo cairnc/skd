@@ -72,9 +72,20 @@ struct prop_info_cmp {
   }
 };
 
-static auto &g_properties_lock = *new std::mutex;
-static auto &g_properties GUARDED_BY(g_properties_lock) =
-    *new std::set<prop_info, prop_info_cmp>;
+// Meyers singletons, not file-scope statics, so we're safe against static
+// initialization order. CachedSet.cpp's static init calls GetBoolProperty
+// before properties.cpp's file-scope initializers have run, which used to
+// hit a null mutex and segfault on library load.
+static std::mutex &properties_lock() {
+  static std::mutex m;
+  return m;
+}
+static std::set<prop_info, prop_info_cmp> &properties_map() {
+  static std::set<prop_info, prop_info_cmp> m;
+  return m;
+}
+#define g_properties_lock properties_lock()
+#define g_properties properties_map()
 
 SYSPROP_WEAK int __system_property_set(const char *key, const char *value) {
   if (key == nullptr || *key == '\0')
@@ -169,6 +180,11 @@ template uint8_t GetUintProperty(const std::string &, uint8_t, uint8_t);
 template uint16_t GetUintProperty(const std::string &, uint16_t, uint16_t);
 template uint32_t GetUintProperty(const std::string &, uint32_t, uint32_t);
 template uint64_t GetUintProperty(const std::string &, uint64_t, uint64_t);
+// CompositionEngine's Planner.cpp takes `debug.sf.enable_cached_set_render_
+// rate` as `unsigned long` — which on arm64 is 64 bits but mangled
+// differently from uint64_t. Explicit instantiation so the linker finds it.
+template unsigned long GetUintProperty(const std::string &, unsigned long,
+                                       unsigned long);
 
 std::string GetProperty(const std::string &key,
                         const std::string &default_value) {

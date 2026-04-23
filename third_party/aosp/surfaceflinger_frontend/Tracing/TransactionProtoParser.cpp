@@ -26,8 +26,13 @@
 
 namespace android::surfaceflinger {
 
+// Modified from upstream: mEmptyBuffer = nullptr → mBuffer = real
+// sp<GraphicBuffer>. Our GraphicBuffer shim eagerly creates + populates a
+// backing GL texture on construction (see libui/GraphicBuffer.cpp) so the
+// preview and wireframe can sample real buffer content instead of
+// synthesizing it per-frame. The rest of the parser is unchanged.
 class FakeExternalTexture : public renderengine::ExternalTexture {
-  const sp<GraphicBuffer> mEmptyBuffer = nullptr;
+  sp<GraphicBuffer> mBuffer;
   uint32_t mWidth;
   uint32_t mHeight;
   uint64_t mId;
@@ -37,9 +42,10 @@ class FakeExternalTexture : public renderengine::ExternalTexture {
 public:
   FakeExternalTexture(uint32_t width, uint32_t height, uint64_t id,
                       PixelFormat pixelFormat, uint64_t usage)
-      : mWidth(width), mHeight(height), mId(id), mPixelFormat(pixelFormat),
+      : mBuffer(sp<GraphicBuffer>::make(width, height, pixelFormat, 1, usage)),
+        mWidth(width), mHeight(height), mId(id), mPixelFormat(pixelFormat),
         mUsage(usage) {}
-  const sp<GraphicBuffer> &getBuffer() const { return mEmptyBuffer; }
+  const sp<GraphicBuffer> &getBuffer() const { return mBuffer; }
   bool
   hasSameBuffer(const renderengine::ExternalTexture &other) const override {
     return getId() == other.getId();

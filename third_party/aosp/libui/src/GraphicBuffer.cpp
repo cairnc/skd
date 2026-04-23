@@ -32,6 +32,29 @@ void glTexParameteri(GLenum, GLenum, GLint);
 
 namespace android {
 
+namespace {
+GraphicBuffer::ContentPopulator &populator() {
+  static GraphicBuffer::ContentPopulator sInstance;
+  return sInstance;
+}
+} // namespace
+
+void GraphicBuffer::setContentPopulator(ContentPopulator p) {
+  populator() = std::move(p);
+}
+
+GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h, PixelFormat format,
+                             uint32_t layerCount, uint64_t usage,
+                             std::string requestorName)
+    : mWidth(w), mHeight(h), mFormat(format), mLayerCount(layerCount),
+      mUsage(usage), mRequestor(std::move(requestorName)) {
+  mId = sNextId++;
+  // Eagerly create the GL texture so its content is ready before any client
+  // (RE, preview, or the wireframe) samples it. Skips if no GL context is
+  // current — getOrCreateGLTexture() will no-op in that case.
+  getOrCreateGLTexture();
+}
+
 GraphicBuffer::~GraphicBuffer() {
   if (mTextureId) {
     GLuint t = mTextureId;
@@ -56,6 +79,12 @@ unsigned int GraphicBuffer::getOrCreateGLTexture() {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, 0);
   mTextureId = t;
+  // Hand off to the content populator (if installed) so the texture is not
+  // just a blob of zeros. In layerviewer this draws a checkerboard plus the
+  // buffer id; once CE/RE actually runs, this is where real composited
+  // pixels could land.
+  if (populator())
+    populator()(mWidth, mHeight, mId, mTextureId);
   return t;
 }
 

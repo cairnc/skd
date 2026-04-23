@@ -36,12 +36,12 @@
 #include <unordered_set>
 #include <vector>
 
-namespace android {
+// Fps: use the real ported class from <scheduler/Fps.h>. An earlier stub
+// here collided with the real one once compositionengine/CompositionRefreshArgs
+// was pulled into the same TU via the CE+RE pipeline in main.cpp.
+#include <scheduler/Fps.h>
 
-// Minimal Fps stand-in.
-struct Fps {
-  float value = 60.f;
-};
+namespace android {
 
 class Fence;
 class GraphicBuffer;
@@ -96,11 +96,25 @@ public:
     return OK;
   }
 
-  sp<Fence> getLayerReleaseFence(HalDisplayId, HWC2::Layer *);
-  LutFileDescriptorMap &getLutFileDescriptorMapper();
+  // These are reachable through Display::presentFrame → HWC output paths,
+  // which layerviewer bypasses (we call RenderEngine::drawLayers directly
+  // against our own ExternalTexture instead of going through Output::present).
+  // Bodies exist purely so the symbols resolve at link time — the default-
+  // constructed values are never consumed.
+  sp<Fence> getLayerReleaseFence(HalDisplayId, HWC2::Layer *) {
+    return Fence::NO_FENCE;
+  }
+  LutFileDescriptorMap &getLutFileDescriptorMapper() {
+    static LutFileDescriptorMap kEmpty;
+    return kEmpty;
+  }
   const aidl::android::hardware::graphics::composer3::OverlayProperties &
-  getOverlaySupport() const;
-  sp<Fence> getPresentFence(HalDisplayId) const;
+  getOverlaySupport() const {
+    static const aidl::android::hardware::graphics::composer3::OverlayProperties
+        kEmpty{};
+    return kEmpty;
+  }
+  sp<Fence> getPresentFence(HalDisplayId) const { return Fence::NO_FENCE; }
   bool getValidateSkipped(HalDisplayId) const { return true; }
   bool hasCapability(
       aidl::android::hardware::graphics::composer3::Capability) const {

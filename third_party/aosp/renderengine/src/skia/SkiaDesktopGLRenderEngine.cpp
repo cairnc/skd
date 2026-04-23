@@ -4,6 +4,23 @@
 
 #include <log/log.h>
 
+#include <renderengine/DesktopGLRenderEngineFactory.h>
+
+namespace android::renderengine {
+
+// Public factory (declared in
+// include/renderengine/DesktopGLRenderEngineFactory.h). Same construction
+// skia::SkiaDesktopGLRenderEngine::create runs, returned as the abstract base
+// so callers don't need the in-tree skia/ headers — those depend on Skia
+// private includes that aren't part of aosp_renderengine's PUBLIC surface.
+std::unique_ptr<RenderEngine>
+createDesktopGLRenderEngine(const RenderEngineCreationArgs &args,
+                            sk_sp<const GrGLInterface> glInterface) {
+  return skia::SkiaDesktopGLRenderEngine::create(args, std::move(glInterface));
+}
+
+} // namespace android::renderengine
+
 namespace android::renderengine::skia {
 
 std::unique_ptr<SkiaDesktopGLRenderEngine>

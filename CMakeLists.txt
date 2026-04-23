@@ -72,6 +72,14 @@ target_link_libraries(make-fake-trace PRIVATE aosp_perfetto_protos)
 
 add_executable(replay-trace replay_trace.cpp)
 target_link_libraries(replay-trace PRIVATE aosp aosp_surfaceflinger_frontend aosp_libgui)
+# GraphicBuffer's eager-create path pulls in glGenTextures / glTexImage2D
+# from libui; the CLI never has a live GL context so those calls no-op,
+# but the symbols still need to resolve at link time.
+if(APPLE)
+    target_link_libraries(replay-trace PRIVATE "-framework OpenGL")
+elseif(UNIX)
+    target_link_libraries(replay-trace PRIVATE GL)
+endif()
 
 if(APPLE)
     target_link_libraries(layerviewer PRIVATE

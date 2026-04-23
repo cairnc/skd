@@ -4,6 +4,7 @@
 # replaced by SkiaDesktopGLRenderEngine against our host GrDirectContext.
 
 set(RE_SRC
+    src/RenderEngine.cpp
     src/ExternalTexture.cpp
     src/skia/SkiaRenderEngine.cpp
     src/skia/AutoBackendTexture.cpp

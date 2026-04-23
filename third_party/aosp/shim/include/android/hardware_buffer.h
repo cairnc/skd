@@ -34,8 +34,13 @@ static inline int AHardwareBuffer_allocate(const AHardwareBuffer_Desc *,
 }
 static inline void AHardwareBuffer_acquire(AHardwareBuffer *) {}
 static inline void AHardwareBuffer_release(AHardwareBuffer *) {}
-static inline void AHardwareBuffer_describe(const AHardwareBuffer *,
-                                            AHardwareBuffer_Desc *) {}
+// Non-inline: defined in libui/src/AHardwareBufferShim.cpp. That TU has
+// GraphicBuffer.h in scope so it can reinterpret_cast the AHB handle back
+// to a GraphicBuffer (which is what toAHardwareBuffer() cast the other way
+// in the first place) and fill out width/height/format/usage. Leaving this
+// as a no-op inline made every RE backend-texture call fail with the
+// infamous "Failed to create a valid texture ... format:<garbage>".
+void AHardwareBuffer_describe(const AHardwareBuffer *, AHardwareBuffer_Desc *);
 static inline uint64_t AHardwareBuffer_getId(const AHardwareBuffer *) {
   return 0;
 }

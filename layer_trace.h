@@ -1,9 +1,9 @@
-// Replayed-trace data model. Loading a .pftrace runs the full SurfaceFlinger
-// FrontEnd pipeline (LayerLifecycleManager → LayerHierarchyBuilder →
-// LayerSnapshotBuilder) to reconstruct per-entry snapshots — see
-// replay_trace.cpp for the reference CLI that proved byte-for-byte
-// equivalence with SF's runtime snapshots. The UI just renders the captured
-// frame summaries; it never touches live FE state.
+// Per-entry replay state. The SurfaceFlinger FrontEnd's LayerSnapshotBuilder
+// maintains a stateful current-frame working set, so to let the UI scrub to
+// any vsync we deep-copy its output after each commit. The UI reads real
+// `LayerSnapshot` fields (no parallel struct, no drift when SF adds a new
+// field) and the snapshot's sp<ExternalTexture> → sp<GraphicBuffer> refs
+// travel with the copy so the per-buffer GL texture stays alive.
 
 #pragma once
 
@@ -13,33 +13,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include <ui/Rect.h>
+#include <FrontEnd/LayerSnapshot.h>
+#include <ui/LayerStack.h>
+#include <ui/Transform.h>
 
 namespace layerviewer {
-
-struct CapturedLayer {
-  uint32_t id = 0;
-  uint32_t parentId = 0;
-  std::string name;
-  int32_t z = 0;
-  uint32_t layerStack = 0;
-  android::FloatRect geomLayerBounds;
-  bool isVisible = false;
-  bool isHiddenByPolicy = false;
-  bool contentOpaque = false;
-  bool isOpaque = false;
-  float alpha = 1.f;
-  float colorR = 0.f, colorG = 0.f, colorB = 0.f, colorA = 1.f;
-  bool hasBuffer = false;
-  uint64_t bufferFrame = 0;
-  // Unique id of the externalTexture (SurfaceFlinger's GraphicBuffer id).
-  // Used as the "big number" watermark in the wireframe so overlapping
-  // layers with identical-looking bounds can still be told apart.
-  uint64_t bufferId = 0;
-
-  // Child ids in traversal order — only populated for reachable layers.
-  std::vector<uint32_t> childIds;
-};
 
 struct CapturedFrame {
   int64_t vsyncId = 0;
@@ -48,14 +26,42 @@ struct CapturedFrame {
   int destroyedHandleCount = 0;
   int txnCount = 0;
   bool displaysChanged = false;
-
-  // Reachable layers only (matches SF's android.surfaceflinger.layers emit).
-  std::unordered_map<uint32_t, CapturedLayer> layersById;
-  std::vector<uint32_t> rootIds;
-
-  // The dominant display at this entry — used by the preview canvas.
   int32_t displayWidth = 0;
   int32_t displayHeight = 0;
+  // Dominant display's traced layer stack + rotation. CompositionEngine's
+  // Output needs these: `setLayerFilter(layerStack)` scopes which snapshots
+  // land on this output, and `setProjection(orientation, ...)` feeds the
+  // DisplaySettings.orientation that RenderEngine applies to the output.
+  android::ui::LayerStack displayLayerStack{android::ui::INVALID_LAYER_STACK};
+  android::ui::Rotation displayRotation = android::ui::ROTATION_0;
+
+  // Reachable snapshots in paint order (globalZ ascending). Matches SF's
+  // own android.surfaceflinger.layers emit set — offscreen snapshots are
+  // dropped.
+  std::vector<android::surfaceflinger::frontend::LayerSnapshot> snapshots;
+  // layer id (snapshot.path.id) → index into `snapshots`.
+  std::unordered_map<uint32_t, size_t> byLayerId;
+  // layer id → parent id (0xffffffff / UNASSIGNED_LAYER_ID for roots).
+  // LayerSnapshot doesn't carry parentId directly; it's on
+  // RequestedLayerState in the lifecycle manager, so we capture it at
+  // replay time alongside the snapshot copy.
+  std::unordered_map<uint32_t, uint32_t> parentByLayerId;
+  // layer id → child ids in paint order (ascending globalZ).
+  std::unordered_map<uint32_t, std::vector<uint32_t>> childrenByLayerId;
+  // top-level reachable layers, in paint order.
+  std::vector<uint32_t> rootIds;
+
+  // Convenience accessors so the UI doesn't have to rebuild iterators.
+  const android::surfaceflinger::frontend::LayerSnapshot *
+  snapshot(uint32_t layerId) const {
+    auto it = byLayerId.find(layerId);
+    return it == byLayerId.end() ? nullptr : &snapshots[it->second];
+  }
+  const std::vector<uint32_t> &children(uint32_t layerId) const {
+    static const std::vector<uint32_t> kEmpty;
+    auto it = childrenByLayerId.find(layerId);
+    return it == childrenByLayerId.end() ? kEmpty : it->second;
+  }
 };
 
 struct ReplayedTrace {
@@ -66,8 +72,7 @@ struct ReplayedTrace {
   int layerSnapshotPacketCount = 0;
 };
 
-// Load + replay synchronously. Returns a populated ReplayedTrace; on failure,
-// `error` is set and `frames` is empty.
+// Load + replay synchronously. `error` set and `frames` empty on failure.
 std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path);
 
 } // namespace layerviewer

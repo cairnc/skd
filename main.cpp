@@ -22,35 +22,288 @@
 #include <string>
 #include <vector>
 
+#include <android-base/stringprintf.h>
+
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_internal.h" // DockBuilder
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkColor.h"
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkFont.h"
-#include "include/core/SkFontMgr.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
-#include "include/core/SkTypeface.h"
 #include "include/gpu/ganesh/GrBackendSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/SkImageGanesh.h"
 #include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/gl/GrGLBackendSurface.h"
 #include "include/gpu/ganesh/gl/GrGLDirectContext.h"
 #include "include/gpu/ganesh/gl/GrGLInterface.h"
 #include "include/gpu/ganesh/gl/GrGLTypes.h"
 
+#include <ui/GraphicBuffer.h>
+
 #include "layer_trace.h"
+
+// CompositionEngine + SkiaRenderEngine pipeline. The Preview composes each
+// frame's LayerSnapshots into a GraphicBuffer the same way SurfaceFlinger
+// would: every reachable snapshot is wrapped in a resident LayerFE, Output
+// prepares + generates client composition requests, SkiaRenderEngine draws
+// into an ExternalTexture backed by our GraphicBuffer, and ImGui samples
+// the resulting GL texture.
+#include "LayerFE.h"
+#include <compositionengine/CompositionEngine.h>
+#include <compositionengine/CompositionRefreshArgs.h>
+#include <compositionengine/Display.h>
+#include <compositionengine/DisplayColorProfileCreationArgs.h>
+#include <compositionengine/DisplayCreationArgs.h>
+#include <compositionengine/LayerFE.h>
+#include <compositionengine/OutputColorSetting.h>
+#include <compositionengine/impl/CompositionEngine.h>
+#include <compositionengine/impl/Display.h>
+#include <compositionengine/impl/OutputCompositionState.h>
+#include <renderengine/DesktopGLRenderEngineFactory.h>
+#include <renderengine/DisplaySettings.h>
+#include <renderengine/LayerSettings.h>
+#include <renderengine/RenderEngine.h>
+#include <renderengine/impl/ExternalTexture.h>
+#include <ui/DisplayId.h>
+#include <ui/GraphicTypes.h>
+#include <ui/Size.h>
+
+#include <ui/GraphicBuffer.h>
 
 namespace {
 
+// ---------------------------------------------------------------------------
+// Composition pipeline — SurfaceFlinger-style.
+//
+// We hold a RenderEngine + CompositionEngine + Display long-lived on the GL
+// thread. Each Preview frame:
+//   1. Look up / create a LayerFE per reachable LayerSnapshot, swap in the
+//      current frame's snapshot (matches upstream SF::updateLayerSnapshots).
+//   2. Build a CompositionRefreshArgs with those LayerFEs and ask Display to
+//      prepare + generate client-composition LayerSettings.
+//   3. RenderEngine::drawLayers composes into a GraphicBuffer-backed
+//      ExternalTexture we own. The GraphicBuffer's GL texture is what ImGui
+//      samples for the Preview window.
+// ---------------------------------------------------------------------------
+
+// The public `compositionengine::Output` interface marks updateCompositionState
+// / writeCompositionState / generateClientCompositionRequests as protected
+// because upstream SF reaches them only through Output::present() after it has
+// set up a RenderSurface. We don't have a RenderSurface — we own our own
+// ExternalTexture output buffer — so we bypass present() and call the compose
+// steps directly. The subclass exists purely to re-export those three methods;
+// behaviour is unchanged.
+class LayerViewerDisplay : public android::compositionengine::impl::Display {
+public:
+  using android::compositionengine::impl::Output::
+      generateClientCompositionRequests;
+  using android::compositionengine::impl::Output::updateCompositionState;
+  using android::compositionengine::impl::Output::writeCompositionState;
+};
+
+struct LayerViewerCompositor {
+  std::unique_ptr<android::renderengine::RenderEngine> re;
+  std::unique_ptr<android::compositionengine::CompositionEngine> ce;
+  std::shared_ptr<LayerViewerDisplay> display;
+  int displayW = 0, displayH = 0;
+
+  android::sp<android::GraphicBuffer> outputBuffer;
+  std::shared_ptr<android::renderengine::impl::ExternalTexture> outputTexture;
+  int outputW = 0, outputH = 0;
+
+  // Resident LayerFEs keyed by snapshot path.id. SF reuses LayerFE objects
+  // across frames for the same layer, just swapping mSnapshot each vsync. We
+  // mirror that: snapshots are scrubable so stale entries linger, but that's
+  // cheap and avoids per-frame sp<>::make churn.
+  std::unordered_map<uint64_t, android::sp<android::LayerFE>> layerFEs;
+
+  // Explicit teardown because member-wise move-assignment would destroy the
+  // RenderEngine before outputTexture unmapped itself against it — the
+  // compiler-generated order is declaration order, but ~ExternalTexture's
+  // unmapExternalTextureBuffer call on mRenderEngine needs RE alive.
+  void destroy() {
+    layerFEs.clear();
+    outputTexture.reset();
+    outputBuffer.clear();
+    display.reset();
+    ce.reset();
+    re.reset();
+  }
+
+  void init(sk_sp<const GrGLInterface> glInterface) {
+    using android::renderengine::RenderEngine;
+    using android::renderengine::RenderEngineCreationArgs;
+    auto args = RenderEngineCreationArgs::Builder()
+                    .setPixelFormat(1 /*RGBA_8888*/)
+                    .setImageCacheSize(0)
+                    .setEnableProtectedContext(false)
+                    .setPrecacheToneMapperShaderOnly(false)
+                    .setBlurAlgorithm(RenderEngine::BlurAlgorithm::NONE)
+                    .setContextPriority(RenderEngine::ContextPriority::MEDIUM)
+                    .setThreaded(RenderEngine::Threaded::NO)
+                    .setGraphicsApi(RenderEngine::GraphicsApi::GL)
+                    .setSkiaBackend(RenderEngine::SkiaBackend::GANESH)
+                    .build();
+    re = android::renderengine::createDesktopGLRenderEngine(
+        args, std::move(glInterface));
+
+    ce = android::compositionengine::impl::createCompositionEngine();
+    ce->setRenderEngine(re.get());
+  }
+
+  void ensureDisplay(int w, int h, const layerviewer::CapturedFrame &frame) {
+    using namespace android::compositionengine;
+    if (display && displayW == w && displayH == h)
+      return;
+    auto displayArgs = DisplayCreationArgsBuilder()
+                           .setId(android::GpuVirtualDisplayId(0))
+                           .setPixels(android::ui::Size(w, h))
+                           .setName("layerviewer-preview")
+                           .build();
+    // Use the templated factory so the returned shared_ptr is typed as our
+    // subclass (which re-exposes the protected compose entry points). The
+    // stock impl::createDisplay would return shared_ptr<impl::Display> and
+    // strip the visibility change.
+    display =
+        impl::createDisplayTemplated<LayerViewerDisplay>(*ce, displayArgs);
+    // CE derefs getDisplayColorProfile() without null-checking during
+    // OutputLayer::updateCompositionState, so create one even though we
+    // never honour any color management here.
+    display->createDisplayColorProfile(
+        DisplayColorProfileCreationArgsBuilder()
+            .setHasWideColorGamut(false)
+            .setHdrCapabilities(android::HdrCapabilities{})
+            .setSupportedPerFrameMetadata(0)
+            .setHwcColorModes({})
+            .Build());
+    display->setCompositionEnabled(true);
+    // Upstream SF wires a RenderSurface via setSurface(...), whose
+    // setDisplaySize() side-effects the framebufferSpace + displaySpace
+    // bounds. We don't wire a RenderSurface (no BufferQueue, no swapchain —
+    // we own a single ExternalTexture output), so poke the bounds directly.
+    // Output::setProjection LOG_FATAL_IFs on INVALID_RECT otherwise.
+    display->editState().framebufferSpace.setBounds({w, h});
+    display->editState().displaySpace.setBounds({w, h});
+    display->setLayerFilter(android::ui::LayerFilter{
+        frame.displayLayerStack, /*toInternalDisplay=*/false});
+    android::Rect rect(0, 0, w, h);
+    display->setProjection(frame.displayRotation, rect, rect);
+    displayW = w;
+    displayH = h;
+  }
+
+  void ensureOutput(int w, int h) {
+    if (w == outputW && h == outputH && outputBuffer)
+      return;
+    outputW = w;
+    outputH = h;
+    outputBuffer = android::sp<android::GraphicBuffer>::make(
+        static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 /*RGBA_8888*/, 1,
+        android::GraphicBuffer::USAGE_HW_RENDER |
+            android::GraphicBuffer::USAGE_HW_TEXTURE,
+        "layerviewer-output");
+    outputTexture =
+        std::make_shared<android::renderengine::impl::ExternalTexture>(
+            outputBuffer, *re,
+            android::renderengine::impl::ExternalTexture::Usage::WRITEABLE);
+  }
+
+  // Compose one frame into outputBuffer. Returns the GL texture name of the
+  // composed buffer (0 if no display info is available).
+  unsigned int composeFrame(const layerviewer::CapturedFrame &frame) {
+    using namespace android::compositionengine;
+    using namespace android::renderengine;
+    using android::ui::Dataspace;
+
+    const int rw = frame.displayWidth;
+    const int rh = frame.displayHeight;
+    if (rw <= 0 || rh <= 0)
+      return 0;
+
+    ensureOutput(rw, rh);
+    ensureDisplay(rw, rh, frame);
+    // Per-frame state that may drift even at a fixed size (layer stack + the
+    // orientation we projection into): refresh on every compose so scrubbing
+    // across a trace where these change doesn't wedge the output.
+    display->setLayerFilter(android::ui::LayerFilter{
+        frame.displayLayerStack, /*toInternalDisplay=*/false});
+    android::Rect rect(0, 0, rw, rh);
+    display->setProjection(frame.displayRotation, rect, rect);
+
+    Layers layersVec;
+    layersVec.reserve(frame.snapshots.size());
+    for (const auto &snap : frame.snapshots) {
+      const uint64_t id = static_cast<uint64_t>(snap.path.id);
+      auto &fe = layerFEs[id];
+      if (!fe)
+        fe = android::sp<android::LayerFE>::make(snap.name);
+      fe->mSnapshot =
+          std::make_unique<android::surfaceflinger::frontend::LayerSnapshot>(
+              snap);
+      layersVec.push_back(fe);
+    }
+
+    CompositionRefreshArgs refreshArgs;
+    refreshArgs.outputs = {display};
+    refreshArgs.layers = std::move(layersVec);
+    refreshArgs.updatingGeometryThisFrame = true;
+    refreshArgs.updatingOutputGeometryThisFrame = true;
+    refreshArgs.outputColorSetting = OutputColorSetting::kUnmanaged;
+    refreshArgs.forceOutputColorMode = android::ui::ColorMode::NATIVE;
+
+    LayerFESet latchedLayers;
+    display->prepare(refreshArgs, latchedLayers);
+    display->updateCompositionState(refreshArgs);
+    display->writeCompositionState(refreshArgs);
+
+    std::vector<LayerFE *> outRefs;
+    auto layerSettings = display->generateClientCompositionRequests(
+        /*supportsProtectedContent=*/false, Dataspace::SRGB, outRefs);
+
+    DisplaySettings displaySettings;
+    displaySettings.physicalDisplay = rect;
+    displaySettings.clip = rect;
+    displaySettings.orientation = android::ui::Transform::ROT_0;
+    displaySettings.outputDataspace = Dataspace::SRGB;
+    displaySettings.maxLuminance = 500.f;
+    displaySettings.targetLuminanceNits = 500.f;
+
+    // drawLayers takes the base renderengine::LayerSettings type; LayerFE::
+    // LayerSettings inherits from it with extra buffer-tracking fields. Slice
+    // via copy — upstream SF does the same (Output::composeSurfaces pushes
+    // through clientCompositionLayers as-is because the slicing happens
+    // inside RenderEngine's caching layer).
+    std::vector<LayerSettings> baseLayers;
+    baseLayers.reserve(layerSettings.size());
+    for (const auto &ls : layerSettings)
+      baseLayers.push_back(ls);
+    re->drawLayers(displaySettings, baseLayers, outputTexture,
+                   android::base::unique_fd{});
+
+    return outputBuffer ? outputBuffer->getGLTextureIfAny() : 0;
+  }
+};
+
 constexpr uint32_t kUnassignedLayerId = 0xffffffffu;
+constexpr float kPi = 3.14159265f;
 
 struct View3D {
   float yawDeg = 25.f;        // rotation around vertical screen axis
   float pitchDeg = 10.f;      // rotation around horizontal screen axis
   float depthSpacing = 200.f; // per-layer Z step in device pixels
+};
+
+struct PreviewView {
+  float zoom = 1.f; // 1.0 = fit-to-window
+  float panX = 0.f; // extra offset in screen pixels (added after zoom)
+  float panY = 0.f;
 };
 
 struct AppState {
@@ -65,6 +318,7 @@ struct AppState {
   bool resetLayoutOnce = true;     // first-run default layout
   bool requestResetLayout = false; // View → Reset Layout
   View3D wireframe3D;
+  PreviewView preview;
 };
 
 struct FitTransform {
@@ -86,6 +340,140 @@ FitTransform FitRectToCanvas(float rw, float rh, float cw, float ch,
 }
 
 // ---------------------------------------------------------------------------
+// 3D math helpers (used by the exploded wireframe view)
+// ---------------------------------------------------------------------------
+
+struct Rotation3D {
+  float cosYaw, sinYaw, cosPitch, sinPitch;
+  float cx, cy, cz; // world-space pivot
+};
+
+Rotation3D MakeRotation(float yawDeg, float pitchDeg, float cx, float cy,
+                        float cz) {
+  return {std::cos(yawDeg * kPi / 180.f),
+          std::sin(yawDeg * kPi / 180.f),
+          std::cos(pitchDeg * kPi / 180.f),
+          std::sin(pitchDeg * kPi / 180.f),
+          cx,
+          cy,
+          cz};
+}
+
+// Applies yaw around Y then pitch around X around the pivot. Returns the
+// post-rotation (X, Y, Z); Z is along screen-normal, used for depth sort.
+void Rotate(const Rotation3D &R, float x, float y, float z, float &ox,
+            float &oy, float &oz) {
+  float X = (x - R.cx) * R.cosYaw - (z - R.cz) * R.sinYaw;
+  float Y = (y - R.cy);
+  float Z = (x - R.cx) * R.sinYaw + (z - R.cz) * R.cosYaw;
+  float Y2 = Y * R.cosPitch - Z * R.sinPitch;
+  float Z2 = Y * R.sinPitch + Z * R.cosPitch;
+  ox = X;
+  oy = Y2;
+  oz = Z2;
+}
+
+ImVec2 Project3D(const Rotation3D &R, float x, float y, float z, float screenCx,
+                 float screenCy, float scale) {
+  float rx, ry, rz;
+  Rotate(R, x, y, z, rx, ry, rz);
+  (void)rz;
+  return ImVec2(screenCx + rx * scale, screenCy + ry * scale);
+}
+
+// Point-in-convex-quad via cross-product signs. Works for any winding order.
+bool PointInQuad(ImVec2 m, ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 d) {
+  auto cross = [](ImVec2 p, ImVec2 q, ImVec2 r) {
+    return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  };
+  float s1 = cross(a, b, m), s2 = cross(b, c, m);
+  float s3 = cross(c, d, m), s4 = cross(d, a, m);
+  return (s1 >= 0 && s2 >= 0 && s3 >= 0 && s4 >= 0) ||
+         (s1 <= 0 && s2 <= 0 && s3 <= 0 && s4 <= 0);
+}
+
+// ---------------------------------------------------------------------------
+// Color helpers (used by the Preview's fake graphic-buffer content)
+// ---------------------------------------------------------------------------
+
+void HsvToRgb(float h, float s, float v, float &r, float &g, float &b) {
+  h = h - std::floor(h);
+  float i = std::floor(h * 6.f);
+  float f = h * 6.f - i;
+  float p = v * (1.f - s);
+  float q = v * (1.f - s * f);
+  float u = v * (1.f - s * (1.f - f));
+  switch (static_cast<int>(i) % 6) {
+  case 0:
+    r = v;
+    g = u;
+    b = p;
+    return;
+  case 1:
+    r = q;
+    g = v;
+    b = p;
+    return;
+  case 2:
+    r = p;
+    g = v;
+    b = u;
+    return;
+  case 3:
+    r = p;
+    g = q;
+    b = v;
+    return;
+  case 4:
+    r = u;
+    g = p;
+    b = v;
+    return;
+  case 5:
+    r = v;
+    g = p;
+    b = q;
+    return;
+  }
+}
+
+// Deterministic light+dark shade pair per bufferId. Golden-ratio hue step
+// so adjacent ids never land on similar hues.
+void HashColorsForBuffer(uint64_t bufferId, SkColor4f &light, SkColor4f &dark) {
+  float hue = (bufferId ? static_cast<float>(bufferId) : 0.5f) * 0.61803398875f;
+  float r, g, b;
+  HsvToRgb(hue, 0.40f, 0.95f, r, g, b);
+  light = SkColor4f{r, g, b, 1.f};
+  HsvToRgb(hue, 0.65f, 0.60f, r, g, b);
+  dark = SkColor4f{r, g, b, 1.f};
+}
+
+// Largest SkFont size such that `text` fits within (maxW, maxH) bounds.
+// Binary search on the font size — Skia can measureText but only at a
+// specific size, so we iterate.
+float FitFontSize(const char *text, float maxW, float maxH, float minSize,
+                  float maxSize) {
+  if (maxW <= 0 || maxH <= 0)
+    return minSize;
+  size_t len = std::strlen(text);
+  if (len == 0)
+    return minSize;
+  float lo = minSize, hi = maxSize;
+  for (int i = 0; i < 12; i++) {
+    float mid = 0.5f * (lo + hi);
+    SkFont probe(nullptr, mid);
+    SkRect bounds;
+    probe.measureText(text, len, SkTextEncoding::kUTF8, &bounds);
+    if (bounds.width() <= maxW && bounds.height() <= maxH) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+// ---------------------------------------------------------------------------
 // Layer tree
 // ---------------------------------------------------------------------------
 
@@ -93,37 +481,36 @@ FitTransform FitRectToCanvas(float rw, float rh, float cw, float ch,
 // they appear — used for up/down arrow key navigation.
 void DrawLayerTreeNode(const layerviewer::CapturedFrame &frame, uint32_t id,
                        AppState &app, std::vector<uint32_t> &flat) {
-  auto it = frame.layersById.find(id);
-  if (it == frame.layersById.end())
+  const auto *snap = frame.snapshot(id);
+  if (!snap)
     return;
-  const auto &layer = it->second;
+  const auto &children = frame.children(id);
 
   ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
                              ImGuiTreeNodeFlags_SpanFullWidth |
                              ImGuiTreeNodeFlags_DefaultOpen;
-  if (layer.childIds.empty())
+  if (children.empty())
     flags |= ImGuiTreeNodeFlags_Leaf;
-  const bool selected = app.selectedLayerId == layer.id;
+  const bool selected = app.selectedLayerId == id;
   if (selected)
     flags |= ImGuiTreeNodeFlags_Selected;
 
-  ImGui::PushID(static_cast<int>(layer.id));
+  ImGui::PushID(static_cast<int>(id));
   // Selection came from outside the tree (3D wireframe click, arrow-key
   // nav etc.): force this branch open so the row is reachable, scroll to
   // it, consume the flag.
   if (selected && app.scrollTreeToSelection)
     ImGui::SetNextItemOpen(true);
-  bool open =
-      ImGui::TreeNodeEx("##n", flags, "#%u %s", layer.id, layer.name.c_str());
+  bool open = ImGui::TreeNodeEx("##n", flags, "#%u %s", id, snap->name.c_str());
   if (selected && app.scrollTreeToSelection) {
     ImGui::SetScrollHereY(0.5f);
     app.scrollTreeToSelection = false;
   }
-  flat.push_back(layer.id);
+  flat.push_back(id);
   if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-    app.selectedLayerId = layer.id;
+    app.selectedLayerId = id;
   if (open) {
-    for (uint32_t childId : layer.childIds)
+    for (uint32_t childId : children)
       DrawLayerTreeNode(frame, childId, app, flat);
     ImGui::TreePop();
   }
@@ -131,12 +518,12 @@ void DrawLayerTreeNode(const layerviewer::CapturedFrame &frame, uint32_t id,
 }
 
 void DrawLayerTreePane(const layerviewer::CapturedFrame &frame, AppState &app) {
-  if (frame.layersById.empty()) {
+  if (frame.snapshots.empty()) {
     ImGui::TextUnformatted("(no layers in this frame)");
     return;
   }
   std::vector<uint32_t> visible;
-  visible.reserve(frame.layersById.size());
+  visible.reserve(frame.snapshots.size());
   for (uint32_t rootId : frame.rootIds)
     DrawLayerTreeNode(frame, rootId, app, visible);
 
@@ -177,12 +564,15 @@ void DrawInspector(const layerviewer::CapturedFrame &frame,
     ImGui::TextUnformatted("Click a layer in the tree to inspect it.");
     return;
   }
-  auto it = frame.layersById.find(app.selectedLayerId);
-  if (it == frame.layersById.end()) {
+  const auto *snap = frame.snapshot(app.selectedLayerId);
+  if (!snap) {
     ImGui::Text("Layer #%u not in this frame.", app.selectedLayerId);
     return;
   }
-  const auto &l = it->second;
+
+  auto parentIt = frame.parentByLayerId.find(app.selectedLayerId);
+  uint32_t parentId =
+      parentIt != frame.parentByLayerId.end() ? parentIt->second : UINT32_MAX;
 
   if (ImGui::BeginTable("inspector", 2,
                         ImGuiTableFlags_SizingStretchProp |
@@ -194,39 +584,44 @@ void DrawInspector(const layerviewer::CapturedFrame &frame,
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(v.c_str());
     };
-    auto rowf = [](const char *k, const char *fmt, auto v) {
+    auto rowLine = [](const char *k, const std::string &v) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       ImGui::TextUnformatted(k);
       ImGui::TableSetColumnIndex(1);
-      ImGui::Text(fmt, v);
+      ImGui::TextUnformatted(v.c_str());
     };
 
-    row("name", l.name);
-    rowf("id", "%u", l.id);
-    rowf("parent", "%u", l.parentId);
-    rowf("globalZ", "%d", l.z);
-    rowf("layerStack", "%u", l.layerStack);
-    rowf("visible", "%s", l.isVisible ? "yes" : "no");
-    rowf("hiddenByPolicy", "%s", l.isHiddenByPolicy ? "yes" : "no");
-    rowf("contentOpaque", "%s", l.contentOpaque ? "yes" : "no");
-    rowf("isOpaque", "%s", l.isOpaque ? "yes" : "no");
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("bounds");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::Text("(%.1f, %.1f) → (%.1f, %.1f)", l.geomLayerBounds.left,
-                l.geomLayerBounds.top, l.geomLayerBounds.right,
-                l.geomLayerBounds.bottom);
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted("color");
-    ImGui::TableSetColumnIndex(1);
-    ImGui::Text("r=%.2f g=%.2f b=%.2f a=%.2f", l.colorR, l.colorG, l.colorB,
-                l.colorA);
-    rowf("alpha", "%.2f", l.alpha);
-    if (l.hasBuffer)
-      rowf("bufferFrame", "%llu", (unsigned long long)l.bufferFrame);
+    row("name", snap->name);
+    rowLine("id", std::to_string(app.selectedLayerId));
+    rowLine("parent", parentId == UINT32_MAX ? std::string("-")
+                                             : std::to_string(parentId));
+    rowLine("globalZ", std::to_string(snap->globalZ));
+    rowLine("layerStack", std::to_string(snap->outputFilter.layerStack.id));
+    rowLine("visible", snap->isVisible ? "yes" : "no");
+    rowLine("hiddenByPolicy", snap->isHiddenByPolicyFromParent ? "yes" : "no");
+    rowLine("contentOpaque", snap->contentOpaque ? "yes" : "no");
+    rowLine("isOpaque", snap->isOpaque ? "yes" : "no");
+    rowLine("bounds",
+            android::base::StringPrintf(
+                "(%.1f, %.1f) → (%.1f, %.1f)", snap->geomLayerBounds.left,
+                snap->geomLayerBounds.top, snap->geomLayerBounds.right,
+                snap->geomLayerBounds.bottom));
+    rowLine("color",
+            android::base::StringPrintf("r=%.2f g=%.2f b=%.2f a=%.2f",
+                                        static_cast<float>(snap->color.r),
+                                        static_cast<float>(snap->color.g),
+                                        static_cast<float>(snap->color.b),
+                                        static_cast<float>(snap->color.a)));
+    rowLine("alpha", android::base::StringPrintf(
+                         "%.2f", static_cast<float>(snap->alpha)));
+    if (snap->externalTexture) {
+      rowLine("bufferId", std::to_string(snap->externalTexture->getId()));
+      rowLine("bufferSize", android::base::StringPrintf(
+                                "%u x %u", snap->externalTexture->getWidth(),
+                                snap->externalTexture->getHeight()));
+      rowLine("frameNumber", std::to_string(snap->frameNumber));
+    }
     ImGui::EndTable();
   }
 }
@@ -285,10 +680,9 @@ void DrawTimeline(AppState &app) {
       float frac = ms / std::max(1.f, totalMs);
       float x = origin.x + frac * size.x;
       dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y), gridCol);
-      char buf[32];
-      snprintf(buf, sizeof buf, "%.0fms", ms);
+      std::string label = android::base::StringPrintf("%.0fms", ms);
       dl->AddText(ImVec2(x + 2, origin.y + 2), IM_COL32(160, 160, 180, 255),
-                  buf);
+                  label.c_str());
     }
   }
 
@@ -343,7 +737,7 @@ void DrawTimeline(AppState &app) {
     ImGui::Text("+layers   %d", hf.addedCount);
     ImGui::Text("-handles  %d", hf.destroyedHandleCount);
     ImGui::Text("displays  %s", hf.displaysChanged ? "changed" : "-");
-    ImGui::Text("layers    %zu reachable", hf.layersById.size());
+    ImGui::Text("layers    %zu reachable", hf.snapshots.size());
     ImGui::EndTooltip();
 
     if (active)
@@ -447,7 +841,6 @@ void DrawCheckerboard(SkCanvas *canvas, const SkRect &rect, float cellPx) {
 // fixed depth proportional to its paint-order rank; click-and-drag rotates
 // yaw/pitch. Drawn entirely with ImGui's DrawList — no Skia, no FBO.
 void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
-  constexpr float kPi = 3.14159265f;
   const float kDepthSpacing = app.wireframe3D.depthSpacing;
 
   ImGui::TextDisabled("click and drag to rotate");
@@ -489,67 +882,45 @@ void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
     return;
   }
 
-  // Filter drawable layers — same rule as the Preview.
-  std::vector<const layerviewer::CapturedLayer *> layers;
-  layers.reserve(frame.layersById.size());
-  for (const auto &[_, l] : frame.layersById) {
-    if (!app.showInvisible && !l.isVisible)
+  // Filter drawable snapshots — same rule as the Preview. `frame.snapshots`
+  // is already sorted by globalZ ascending (paint order), so no extra sort
+  // needed after filtering.
+  using Snap = android::surfaceflinger::frontend::LayerSnapshot;
+  std::vector<const Snap *> layers;
+  layers.reserve(frame.snapshots.size());
+  for (const auto &snap : frame.snapshots) {
+    if (!app.showInvisible && !snap.isVisible)
       continue;
-    const auto &b = l.geomLayerBounds;
+    const auto &b = snap.geomLayerBounds;
     if (b.right <= b.left || b.bottom <= b.top)
       continue;
     if (b.left < 0 || b.top < 0 || b.right > cw || b.bottom > ch)
       continue;
-    layers.push_back(&l);
+    layers.push_back(&snap);
   }
-  std::sort(layers.begin(), layers.end(),
-            [](const auto *a, const auto *b) { return a->z < b->z; });
 
-  // 3D transform: rotate yaw around Y, then pitch around X, then ortho.
-  // The rotation is around the *center* of the layer stack so the view
-  // pivots in place when you drag.
-  const float cy_ = std::cos(app.wireframe3D.yawDeg * kPi / 180.f);
-  const float sy_ = std::sin(app.wireframe3D.yawDeg * kPi / 180.f);
-  const float cp_ = std::cos(app.wireframe3D.pitchDeg * kPi / 180.f);
-  const float sp_ = std::sin(app.wireframe3D.pitchDeg * kPi / 180.f);
-  const float cxd = cw * 0.5f;
-  const float cyd = ch * 0.5f;
-  const float czd =
-      0.5f * std::max<int>(0, (int)layers.size() - 1) * kDepthSpacing;
-  // Returns the post-rotation (X, Y, Z) — we use XY for screen, Z for depth
-  // sort and hit-testing order.
-  auto rotate = [&](float x, float y, float z, float &ox, float &oy,
-                    float &oz) {
-    float X = (x - cxd) * cy_ - (z - czd) * sy_;
-    float Y = (y - cyd);
-    float Z = (x - cxd) * sy_ + (z - czd) * cy_;
-    float Y2 = Y * cp_ - Z * sp_;
-    float Z2 = Y * sp_ + Z * cp_;
-    ox = X;
-    oy = Y2;
-    oz = Z2;
-  };
-
-  // Fixed scale: fit the *unrotated* device rect into the window. Scale
-  // stays constant regardless of yaw/pitch so rotation doesn't zoom in or
-  // out — rotated corners may extend past the window, that's fine.
+  // Rotate around the *center* of the layer stack so the view pivots in
+  // place when you drag. Fixed scale: fit the unrotated device rect into
+  // the window so rotation never zooms — rotated corners may extend past
+  // the viewport, that's fine.
+  const float czd = 0.5f *
+                    std::max<int>(0, static_cast<int>(layers.size() - 1)) *
+                    kDepthSpacing;
+  const Rotation3D R =
+      MakeRotation(app.wireframe3D.yawDeg, app.wireframe3D.pitchDeg, cw * 0.5f,
+                   ch * 0.5f, czd);
   const float pad = 80.f;
   float scale = std::min((avail.x - 2 * pad) / cw, (avail.y - 2 * pad) / ch);
   scale = std::max(0.01f, scale);
-  float screenCx = origin.x + avail.x * 0.5f;
-  float screenCy = origin.y + avail.y * 0.5f;
-  auto project = [&](float wx, float wy, float wz) {
-    float rx, ry, rz;
-    rotate(wx, wy, wz, rx, ry, rz);
-    return ImVec2(screenCx + rx * scale, screenCy + ry * scale);
-  };
+  const float screenCx = origin.x + avail.x * 0.5f;
+  const float screenCy = origin.y + avail.y * 0.5f;
 
   // Device-rect (at z=0) as a reference plane.
   {
-    ImVec2 p00 = project(0.f, 0.f, 0.f);
-    ImVec2 p10 = project(cw, 0.f, 0.f);
-    ImVec2 p11 = project(cw, ch, 0.f);
-    ImVec2 p01 = project(0.f, ch, 0.f);
+    ImVec2 p00 = Project3D(R, 0.f, 0.f, 0.f, screenCx, screenCy, scale);
+    ImVec2 p10 = Project3D(R, cw, 0.f, 0.f, screenCx, screenCy, scale);
+    ImVec2 p11 = Project3D(R, cw, ch, 0.f, screenCx, screenCy, scale);
+    ImVec2 p01 = Project3D(R, 0.f, ch, 0.f, screenCx, screenCy, scale);
     dl->AddQuadFilled(p00, p10, p11, p01, IM_COL32(40, 40, 48, 140));
     dl->AddQuad(p00, p10, p11, p01, IM_COL32(170, 170, 210, 220), 1.5f);
   }
@@ -563,7 +934,7 @@ void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
   // `viewZ` meaningful as "distance along screen normal toward viewer" —
   // so *larger viewZ = closer to viewer*, regardless of pitch sign.
   struct Proj {
-    const layerviewer::CapturedLayer *l;
+    const Snap *l;
     int rank; // index in z-ascending `layers`: 0 = bottom of stack.
     ImVec2 c[4];
     float viewZ; // larger = closer to viewer (see View3D comment).
@@ -576,13 +947,15 @@ void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
     Proj p;
     p.l = layers[k];
     p.rank = static_cast<int>(k);
-    p.c[0] = project(b.left, b.top, z);
-    p.c[1] = project(b.right, b.top, z);
-    p.c[2] = project(b.right, b.bottom, z);
-    p.c[3] = project(b.left, b.bottom, z);
+    p.c[0] = Project3D(R, b.left, b.top, z, screenCx, screenCy, scale);
+    p.c[1] = Project3D(R, b.right, b.top, z, screenCx, screenCy, scale);
+    p.c[2] = Project3D(R, b.right, b.bottom, z, screenCx, screenCy, scale);
+    p.c[3] = Project3D(R, b.left, b.bottom, z, screenCx, screenCy, scale);
     float rx, ry;
-    rotate(0.5f * (b.left + b.right), 0.5f * (b.top + b.bottom), z, rx, ry,
+    Rotate(R, 0.5f * (b.left + b.right), 0.5f * (b.top + b.bottom), z, rx, ry,
            p.viewZ);
+    (void)rx;
+    (void)ry;
     projs.push_back(p);
   }
   // Sort by RANK, not by post-rotation viewZ of the center. Center-based
@@ -594,159 +967,48 @@ void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
   std::sort(projs.begin(), projs.end(),
             [](const Proj &a, const Proj &b) { return a.rank > b.rank; });
 
-  // Point-in-convex-quad via cross-product signs.
-  auto pointInQuad = [](const ImVec2 &m, const ImVec2 &a, const ImVec2 &b,
-                        const ImVec2 &c, const ImVec2 &d) {
-    auto cross = [](ImVec2 p, ImVec2 q, ImVec2 r) {
-      return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-    };
-    float s1 = cross(a, b, m), s2 = cross(b, c, m);
-    float s3 = cross(c, d, m), s4 = cross(d, a, m);
-    return (s1 >= 0 && s2 >= 0 && s3 >= 0 && s4 >= 0) ||
-           (s1 <= 0 && s2 <= 0 && s3 <= 0 && s4 <= 0);
-  };
-
   // Hit-test first, in near→far order (projs is far→near, so iterate back).
   uint32_t hoverId = kUnassignedLayerId;
   ImVec2 mouse = ImGui::GetMousePos();
   if (hovered) {
     for (auto it = projs.rbegin(); it != projs.rend(); ++it) {
-      if (pointInQuad(mouse, it->c[0], it->c[1], it->c[2], it->c[3])) {
-        hoverId = it->l->id;
+      if (PointInQuad(mouse, it->c[0], it->c[1], it->c[2], it->c[3])) {
+        hoverId = static_cast<uint32_t>(it->l->path.id);
         break;
       }
     }
   }
 
-  // Deterministic distinct color per layer id — golden-ratio hue spacing so
-  // adjacent ids never land on similar hues. Two pre-baked complementary
-  // tints per layer: the base and a deeper shade used for the checkerboard.
-  auto hsvToRgb = [](float h, float s, float v, float &r, float &g, float &b) {
-    h = h - std::floor(h);
-    float i = std::floor(h * 6.f);
-    float f = h * 6.f - i;
-    float p = v * (1.f - s);
-    float q = v * (1.f - s * f);
-    float t = v * (1.f - s * (1.f - f));
-    switch (static_cast<int>(i) % 6) {
-    case 0:
-      r = v;
-      g = t;
-      b = p;
-      return;
-    case 1:
-      r = q;
-      g = v;
-      b = p;
-      return;
-    case 2:
-      r = p;
-      g = v;
-      b = t;
-      return;
-    case 3:
-      r = p;
-      g = q;
-      b = v;
-      return;
-    case 4:
-      r = t;
-      g = p;
-      b = v;
-      return;
-    case 5:
-      r = v;
-      g = p;
-      b = q;
-      return;
-    }
-  };
-  auto colorsFor = [&](uint32_t id, ImU32 &light, ImU32 &dark) {
-    float hue = static_cast<float>(id) * 0.61803398875f; // golden ratio
-    float r, g, b;
-    hsvToRgb(hue, 0.55f, 0.92f, r, g, b);
-    light = IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255),
-                     static_cast<int>(b * 255), 200);
-    hsvToRgb(hue, 0.75f, 0.55f, r, g, b);
-    dark = IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255),
-                    static_cast<int>(b * 255), 200);
-  };
-
-  // Low-freq checkerboard — big cells (128 device-space pixels) so overlapping
-  // layers with similar colors can still be told apart by the checker
-  // phase. We project each cell corner into screen space so the checker
-  // rotates with the layer.
-  const float kCheckerCell = 128.f;
+  // Two-tone palette — the wireframe's job is to show bounds and stacking,
+  // not identity. Mint vs warm coral is a complementary high-contrast pair
+  // that both stay legible on the dark background. Per-layer identity
+  // (checkerboard + buffer-id watermark) lives in the Skia preview
+  // instead, where it'll be replaced by real RenderEngine output.
+  const ImU32 fillVisible = IM_COL32(0x4e, 0xc9, 0xb0, 180);   // mint
+  const ImU32 strokeVisible = IM_COL32(0x2e, 0x8b, 0x77, 255); // deeper mint
+  const ImU32 fillHidden = IM_COL32(0xd6, 0x7a, 0x4a, 150);    // warm coral
+  const ImU32 strokeHidden = IM_COL32(0x9a, 0x4e, 0x2a, 220);  // deeper coral
 
   // Draw far → near.
   for (const auto &p : projs) {
-    bool selected = app.selectedLayerId == p.l->id;
-    ImU32 light, dark;
-    colorsFor(p.l->id, light, dark);
-
-    // Fill base (light color), then overlay dark-tinted cells to build the
-    // checkerboard directly as rotated sub-quads.
-    dl->AddQuadFilled(p.c[0], p.c[1], p.c[2], p.c[3], light);
-    const auto &b = p.l->geomLayerBounds;
-    float z = static_cast<float>(p.rank) * kDepthSpacing;
-    for (float cy = std::floor(b.top / kCheckerCell) * kCheckerCell;
-         cy < b.bottom; cy += kCheckerCell) {
-      for (float cx = std::floor(b.left / kCheckerCell) * kCheckerCell;
-           cx < b.right; cx += kCheckerCell) {
-        int ix = static_cast<int>(std::floor(cx / kCheckerCell));
-        int iy = static_cast<int>(std::floor(cy / kCheckerCell));
-        if (((ix + iy) & 1) == 0)
-          continue; // only dark cells overlaid
-        float x0 = std::max(cx, b.left);
-        float y0 = std::max(cy, b.top);
-        float x1 = std::min(cx + kCheckerCell, b.right);
-        float y1 = std::min(cy + kCheckerCell, b.bottom);
-        ImVec2 q0 = project(x0, y0, z);
-        ImVec2 q1 = project(x1, y0, z);
-        ImVec2 q2 = project(x1, y1, z);
-        ImVec2 q3 = project(x0, y1, z);
-        dl->AddQuadFilled(q0, q1, q2, q3, dark);
-      }
-    }
-
-    ImU32 stroke =
-        selected ? IM_COL32(255, 215, 50, 255) : IM_COL32(40, 40, 50, 220);
+    uint32_t lid = static_cast<uint32_t>(p.l->path.id);
+    bool selected = app.selectedLayerId == lid;
+    ImU32 fill = p.l->isVisible ? fillVisible : fillHidden;
+    dl->AddQuadFilled(p.c[0], p.c[1], p.c[2], p.c[3], fill);
+    ImU32 stroke = selected ? IM_COL32(255, 215, 50, 255)
+                            : (p.l->isVisible ? strokeVisible : strokeHidden);
     dl->AddQuad(p.c[0], p.c[1], p.c[2], p.c[3], stroke, selected ? 2.5f : 1.f);
-
-    // Big centered buffer-id watermark so overlapping layers can still be
-    // told apart by their underlying GraphicBuffer. Fall back to layer id
-    // when the layer has no buffer (container / effect layers).
-    ImVec2 center =
-        project(0.5f * (b.left + b.right), 0.5f * (b.top + b.bottom), z);
-    char buf[32];
-    if (p.l->bufferId)
-      snprintf(buf, sizeof buf, "%llu",
-               static_cast<unsigned long long>(p.l->bufferId));
-    else
-      snprintf(buf, sizeof buf, "#%u", p.l->id);
-    // Scale the watermark text with the projected quad height so small
-    // layers don't get a giant label.
-    float px0 = std::min({p.c[0].x, p.c[1].x, p.c[2].x, p.c[3].x});
-    float py0 = std::min({p.c[0].y, p.c[1].y, p.c[2].y, p.c[3].y});
-    float px1 = std::max({p.c[0].x, p.c[1].x, p.c[2].x, p.c[3].x});
-    float py1 = std::max({p.c[0].y, p.c[1].y, p.c[2].y, p.c[3].y});
-    float size = std::clamp(0.35f * std::min(px1 - px0, py1 - py0), 10.f, 64.f);
-    ImFont *font = ImGui::GetFont();
-    ImVec2 textSz = font->CalcTextSizeA(size, FLT_MAX, 0.f, buf);
-    dl->AddText(font, size,
-                ImVec2(center.x - textSz.x * 0.5f, center.y - textSz.y * 0.5f),
-                IM_COL32(15, 15, 20, 230), buf);
   }
 
   if (hovered && hoverId != kUnassignedLayerId) {
-    auto it = frame.layersById.find(hoverId);
-    if (it != frame.layersById.end()) {
+    if (const Snap *snap = frame.snapshot(hoverId)) {
       ImGui::BeginTooltip();
-      ImGui::Text("#%u %s", it->second.id, it->second.name.c_str());
-      const auto &b = it->second.geomLayerBounds;
+      ImGui::Text("#%u %s", hoverId, snap->name.c_str());
+      const auto &b = snap->geomLayerBounds;
       ImGui::Text("bounds: (%.1f, %.1f) → (%.1f, %.1f)", b.left, b.top, b.right,
                   b.bottom);
-      ImGui::Text("z=%d  alpha=%.2f", it->second.z, it->second.alpha);
+      ImGui::Text("globalZ=%zu  alpha=%.2f", snap->globalZ,
+                  static_cast<float>(snap->alpha));
       ImGui::EndTooltip();
     }
     if (ImGui::IsItemClicked()) {
@@ -756,9 +1018,16 @@ void DrawWireframe(const layerviewer::CapturedFrame &frame, AppState &app) {
   }
 }
 
+// Placeholder preview. The real composition path — LayerSnapshots → resident
+// `LayerFE`s → `compositionengine::Output::generateClientCompositionRequests`
+// → `SkiaDesktopGLRenderEngine::drawLayers` into a GraphicBuffer-backed
+// ExternalTexture — replaces this function in the next commit. For now we
+// just draw the display viewport so the window isn't blank while the rest
+// of the plumbing is coming online.
 void DrawPreviewCanvas(SkCanvas *canvas, int fbW, int fbH,
                        const layerviewer::CapturedFrame &frame,
                        const AppState &app) {
+  (void)app;
   SkPaint bg;
   bg.setColor(SkColorSetARGB(255, 24, 24, 28));
   canvas->drawRect(SkRect::MakeIWH(fbW, fbH), bg);
@@ -770,7 +1039,6 @@ void DrawPreviewCanvas(SkCanvas *canvas, int fbW, int fbH,
 
   FitTransform t = FitRectToCanvas(cw, ch, (float)fbW, (float)fbH, 32.f);
   SkRect displayRect = SkRect::MakeXYWH(t.tx, t.ty, cw * t.scale, ch * t.scale);
-
   DrawCheckerboard(canvas, displayRect, 16.f);
 
   SkPaint border;
@@ -780,71 +1048,19 @@ void DrawPreviewCanvas(SkCanvas *canvas, int fbW, int fbH,
   border.setColor(SkColorSetARGB(200, 160, 160, 200));
   canvas->drawRect(displayRect, border);
 
-  // Gather drawable layers in paint order (ascending z). Filter to ones
-  // whose bounds actually sit within the display rect — the ±10800
-  // layer-space root bounds otherwise swamp every child.
-  std::vector<const layerviewer::CapturedLayer *> layers;
-  layers.reserve(frame.layersById.size());
-  for (const auto &[_, l] : frame.layersById) {
-    if (!app.showInvisible && !l.isVisible)
-      continue;
-    const auto &b = l.geomLayerBounds;
-    if (b.right <= b.left || b.bottom <= b.top)
-      continue;
-    if (b.left < 0 || b.top < 0 || b.right > cw || b.bottom > ch)
-      continue;
-    layers.push_back(&l);
-  }
-  std::sort(layers.begin(), layers.end(),
-            [](const auto *a, const auto *b) { return a->z < b->z; });
-
-  SkPaint fill, stroke, textP;
-  fill.setStyle(SkPaint::kFill_Style);
-  fill.setAntiAlias(true);
-  stroke.setStyle(SkPaint::kStroke_Style);
-  stroke.setAntiAlias(true);
-  textP.setAntiAlias(true);
-  SkFont font(nullptr, 11.f);
+  SkFont font(nullptr, 18.f);
   font.setEdging(SkFont::Edging::kAntiAlias);
-
-  for (const auto *l : layers) {
-    const auto &b = l->geomLayerBounds;
-    SkRect r =
-        SkRect::MakeLTRB(t.tx + b.left * t.scale, t.ty + b.top * t.scale,
-                         t.tx + b.right * t.scale, t.ty + b.bottom * t.scale);
-
-    // Faint fill tinted by the layer's requested color (clamped — negative
-    // values are the "no color fill" sentinel).
-    SkColor4f c = {l->colorR >= 0 ? l->colorR : 0.5f,
-                   l->colorG >= 0 ? l->colorG : 0.6f,
-                   l->colorB >= 0 ? l->colorB : 0.95f, 0.10f};
-    fill.setColor4f(c, nullptr);
-    canvas->drawRect(r, fill);
-
-    SkColor4f sc = {c.fR, c.fG, c.fB, 0.55f};
-    stroke.setStrokeWidth(1.f);
-    if (app.selectedLayerId == l->id) {
-      sc = {1.f, 0.85f, 0.2f, 1.f};
-      stroke.setStrokeWidth(2.5f);
-    }
-    stroke.setColor4f(sc, nullptr);
-    canvas->drawRect(r, stroke);
-
-    // Layer name inside the rect. Fade unless selected. Only show if the
-    // rect is tall enough — avoids text exploding over tiny strips.
-    if (r.height() >= 16.f && r.width() >= 40.f) {
-      SkColor4f tc = app.selectedLayerId == l->id
-                         ? SkColor4f{1.f, 0.95f, 0.6f, 1.f}
-                         : SkColor4f{1.f, 1.f, 1.f, 0.65f};
-      textP.setColor4f(tc, nullptr);
-      std::string label = "#" + std::to_string(l->id) + " " + l->name;
-      canvas->save();
-      canvas->clipRect(r);
-      canvas->drawString(label.c_str(), r.left() + 4.f, r.top() + 13.f, font,
-                         textP);
-      canvas->restore();
-    }
-  }
+  SkPaint text;
+  text.setColor4f({0.80f, 0.82f, 0.90f, 1.f}, nullptr);
+  canvas->drawString("composition pipeline landing in next commit",
+                     displayRect.left() + 12.f, displayRect.top() + 28.f, font,
+                     text);
+  canvas->drawString(
+      frame.snapshots.size() == 0
+          ? "(no reachable layers in this frame)"
+          : (std::to_string(frame.snapshots.size()) + " reachable snapshots")
+                .c_str(),
+      displayRect.left() + 12.f, displayRect.top() + 52.f, font, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -946,12 +1162,91 @@ int main(int argc, char **argv) {
   SDL_GL_SetSwapInterval(1);
 
   sk_sp<const GrGLInterface> glInterface = GrGLMakeNativeInterface();
-  sk_sp<GrDirectContext> grCtx = GrDirectContexts::MakeGL(glInterface);
-  if (!grCtx) {
+
+  // Stand up RE + CE + Display singletons. From this point on every layer
+  // buffer's GL texture (both content + compositor output) is allocated on
+  // this GL context, so the compositor must be built before any trace load.
+  LayerViewerCompositor compositor;
+  compositor.init(glInterface);
+  if (!compositor.re) {
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "layerviewer",
-                             "GrDirectContexts::MakeGL failed", window);
+                             "SkiaDesktopGLRenderEngine::create failed",
+                             window);
     return 1;
   }
+
+  // Install a content populator so every GraphicBuffer's GL texture has a
+  // recognisable pattern (checkerboard + buffer id watermark) — otherwise
+  // the composed output is just a field of zeros. Must be installed before
+  // any GraphicBuffer is constructed, i.e. before LoadAndReplay.
+  android::GraphicBuffer::setContentPopulator([](uint32_t w, uint32_t h,
+                                                 uint64_t bufferId,
+                                                 unsigned int glTexId) {
+    if (w == 0 || h == 0 || glTexId == 0)
+      return;
+    // Cap raster resolution: 4K layers × Skia-raster is real CPU work,
+    // and the watermark reads fine even when downsampled at sample time.
+    const uint32_t kMaxSide = 512;
+    uint32_t rw = std::min(w, kMaxSide);
+    uint32_t rh = std::min(h, kMaxSide);
+    // Preserve aspect so the watermark doesn't stretch.
+    if (w > h)
+      rh = std::max<uint32_t>(1, (rw * h) / w);
+    else
+      rw = std::max<uint32_t>(1, (rh * w) / h);
+
+    SkImageInfo info =
+        SkImageInfo::Make(rw, rh, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    sk_sp<SkSurface> surface = SkSurfaces::Raster(info);
+    if (!surface)
+      return;
+    SkCanvas *c = surface->getCanvas();
+
+    SkColor4f light, dark;
+    HashColorsForBuffer(bufferId, light, dark);
+    SkPaint p;
+    p.setStyle(SkPaint::kFill_Style);
+    p.setColor4f(light, nullptr);
+    c->drawRect(SkRect::MakeWH(rw, rh), p);
+
+    p.setColor4f(dark, nullptr);
+    const float cell = std::max(16.f, std::min<float>(rw, rh) / 8.f);
+    for (float y = 0; y < rh; y += cell) {
+      for (float x = 0; x < rw; x += cell) {
+        if ((static_cast<int>(x / cell) + static_cast<int>(y / cell)) & 1)
+          continue;
+        c->drawRect(SkRect::MakeXYWH(x, y, cell, cell), p);
+      }
+    }
+
+    std::string label = std::to_string(bufferId);
+    float sz = FitFontSize(label.c_str(), rw * 0.85f, rh * 0.6f, 12.f, 480.f);
+    SkFont font(nullptr, sz);
+    font.setEdging(SkFont::Edging::kAntiAlias);
+    SkPaint textPaint;
+    textPaint.setAntiAlias(true);
+    textPaint.setColor4f({0.08f, 0.08f, 0.12f, 0.95f}, nullptr);
+    SkRect tb;
+    font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &tb);
+    c->drawString(label.c_str(), rw * 0.5f - tb.centerX(),
+                  rh * 0.5f - tb.centerY(), font, textPaint);
+
+    SkPixmap pm;
+    if (!surface->peekPixels(&pm))
+      return;
+
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    glBindTexture(GL_TEXTURE_2D, glTexId);
+    // glTexImage2D in the GraphicBuffer ctor allocated a w×h RGBA8
+    // texture with nullptr data. Re-upload at the raster size — smaller
+    // than w×h is fine, it just replaces with a shrunk version; we keep
+    // the texture dimensions at the raster dimensions via a full
+    // glTexImage2D.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rw, rh, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, pm.addr());
+    glBindTexture(GL_TEXTURE_2D, prev);
+  });
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -988,8 +1283,6 @@ int main(int argc, char **argv) {
     if (!app.trace->error.empty())
       std::fprintf(stderr, "trace load failed: %s\n", app.trace->error.c_str());
   }
-
-  PreviewTarget preview;
 
   bool quit = false;
   while (!quit) {
@@ -1070,10 +1363,15 @@ int main(int argc, char **argv) {
         ImGui::Text("Replay frames: %zu", app.trace->frames.size());
         if (!app.trace->frames.empty()) {
           const auto &f = app.trace->frames[app.frameIndex];
+          int withBuffer = 0;
+          for (const auto &snap : f.snapshots)
+            if (snap.externalTexture)
+              withBuffer++;
           ImGui::Separator();
           ImGui::Text("Current vsync: %lld", (long long)f.vsyncId);
           ImGui::Text("Display:       %dx%d", f.displayWidth, f.displayHeight);
-          ImGui::Text("Reachable:     %zu layers", f.layersById.size());
+          ImGui::Text("Reachable:     %zu layers (%d with buffer)",
+                      f.snapshots.size(), withBuffer);
         }
       }
     }
@@ -1096,21 +1394,105 @@ int main(int argc, char **argv) {
     ImGui::End();
 
     if (ImGui::Begin("Preview")) {
+      // Toolbar — keep interactions discoverable without cluttering.
+      ImGui::TextDisabled(
+          "drag/two-finger scroll = pan   ⌘scroll/pinch = zoom");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("reset view"))
+        app.preview = PreviewView{};
+      ImGui::SameLine();
+      ImGui::Text("%.2fx", app.preview.zoom);
+
       ImVec2 avail = ImGui::GetContentRegionAvail();
-      int pxW = static_cast<int>(avail.x * io.DisplayFramebufferScale.x);
-      int pxH = static_cast<int>(avail.y * io.DisplayFramebufferScale.y);
-      if (pxW > 0 && pxH > 0 && app.trace && !app.trace->frames.empty() &&
-          preview.ensure(grCtx.get(), pxW, pxH)) {
-        SkCanvas *canvas = preview.surface->getCanvas();
-        DrawPreviewCanvas(canvas, pxW, pxH, app.trace->frames[app.frameIndex],
-                          app);
-        grCtx->flushAndSubmit();
-        grCtx->resetContext();
-        // Rebind the window framebuffer — ImGui draws into FBO 0.
+      if (avail.x > 0 && avail.y > 0 && app.trace &&
+          !app.trace->frames.empty()) {
+        // Compose this frame through CE + SkiaRenderEngine. Returns the GL
+        // texture name of the composed output buffer (0 on failure).
+        unsigned int composedTex =
+            compositor.composeFrame(app.trace->frames[app.frameIndex]);
+
+        // RE's own Ganesh context touched a bunch of GL state — restore the
+        // default framebuffer + viewport for ImGui, same as we used to do
+        // after Skia FBO rendering.
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, fbW, fbH);
 
-        ImGui::Image(static_cast<ImTextureID>(preview.texId), avail);
+        ImVec2 winMin = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##previewnav", avail,
+                               ImGuiButtonFlags_MouseButtonLeft |
+                                   ImGuiButtonFlags_MouseButtonMiddle |
+                                   ImGuiButtonFlags_MouseButtonRight);
+        ImVec2 winMax(winMin.x + avail.x, winMin.y + avail.y);
+        float winCx = 0.5f * (winMin.x + winMax.x);
+        float winCy = 0.5f * (winMin.y + winMax.y);
+
+        // Aspect-preserving fit of the composed display rect into the window.
+        float rw =
+            static_cast<float>(app.trace->frames[app.frameIndex].displayWidth);
+        float rh =
+            static_cast<float>(app.trace->frames[app.frameIndex].displayHeight);
+        float baseW = avail.x, baseH = avail.y;
+        if (rw > 0 && rh > 0) {
+          float ar = rw / rh;
+          float winAr = avail.x / avail.y;
+          if (winAr > ar) {
+            baseH = avail.y;
+            baseW = baseH * ar;
+          } else {
+            baseW = avail.x;
+            baseH = baseW / ar;
+          }
+        }
+        float imgW = baseW * app.preview.zoom;
+        float imgH = baseH * app.preview.zoom;
+        ImVec2 imgMin(winCx + app.preview.panX - imgW * 0.5f,
+                      winCy + app.preview.panY - imgH * 0.5f);
+        ImVec2 imgMax(imgMin.x + imgW, imgMin.y + imgH);
+
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        dl->PushClipRect(winMin, winMax, true);
+        dl->AddRectFilled(winMin, winMax, IM_COL32(18, 18, 22, 255));
+        if (composedTex) {
+          dl->AddImage(static_cast<ImTextureID>(composedTex), imgMin, imgMax);
+        } else {
+          dl->AddText(ImVec2(winMin.x + 12, winMin.y + 12),
+                      IM_COL32(200, 200, 220, 220),
+                      "(no display info in this frame)");
+        }
+        dl->AddRect(imgMin, imgMax, IM_COL32(160, 160, 200, 220), 0.f, 0, 1.f);
+        dl->PopClipRect();
+
+        // Input handling — unchanged from the Skia-FBO era. Plain wheel pans
+        // (matches macOS two-finger scroll); ⌘/Ctrl+wheel zooms around the
+        // cursor; dragging pans. See earlier commit for the pan-anchor math.
+        if (ImGui::IsItemHovered()) {
+          float wheelY = io.MouseWheel;
+          float wheelX = io.MouseWheelH;
+          bool zoomMod = io.KeyCtrl || io.KeySuper;
+          if (wheelY != 0.f && zoomMod) {
+            float oldZoom = app.preview.zoom;
+            float newZoom =
+                std::clamp(oldZoom * std::pow(1.15f, wheelY), 0.1f, 30.f);
+            float ratio = newZoom / oldZoom;
+            ImVec2 m = ImGui::GetMousePos();
+            app.preview.panX =
+                (m.x - winCx) * (1.f - ratio) + app.preview.panX * ratio;
+            app.preview.panY =
+                (m.y - winCy) * (1.f - ratio) + app.preview.panY * ratio;
+            app.preview.zoom = newZoom;
+          } else if (wheelX != 0.f || wheelY != 0.f) {
+            app.preview.panX += wheelX * 30.f;
+            app.preview.panY += wheelY * 30.f;
+          }
+        }
+        if (ImGui::IsItemActive() &&
+            (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+             ImGui::IsMouseDragging(ImGuiMouseButton_Right) ||
+             ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
+          ImVec2 delta = io.MouseDelta;
+          app.preview.panX += delta.x;
+          app.preview.panY += delta.y;
+        }
       } else if (!app.trace) {
         ImGui::TextUnformatted("(no trace loaded)");
       }
@@ -1130,8 +1512,11 @@ int main(int argc, char **argv) {
     SDL_GL_SwapWindow(window);
   }
 
-  preview.destroy();
-  grCtx.reset();
+  // Tear down the compositor before the GL context goes away — the output
+  // GraphicBuffer + every layer's populated buffer owns GL textures, and
+  // SkiaRenderEngine owns an internal GrDirectContext, all needing a live
+  // current context. Ordered teardown: see LayerViewerCompositor::destroy().
+  compositor.destroy();
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();

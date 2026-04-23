@@ -49,72 +49,53 @@ bool readFile(const std::string &path, std::string &out) {
   return true;
 }
 
-CapturedLayer captureLayer(const LayerSnapshot &s) {
-  CapturedLayer c;
-  c.id = static_cast<uint32_t>(s.path.id);
-  c.name = s.name;
-  // LayerSnapshot has no `z` member — `globalZ` is the final traversal index
-  // assigned by LayerSnapshotBuilder::sortSnapshotsByZ, which is what the
-  // paint order actually uses.
-  c.z = static_cast<int32_t>(s.globalZ);
-  c.layerStack = s.outputFilter.layerStack.id;
-  c.geomLayerBounds = s.geomLayerBounds;
-  c.isVisible = s.isVisible;
-  c.isHiddenByPolicy = s.isHiddenByPolicyFromParent;
-  c.contentOpaque = s.contentOpaque;
-  c.isOpaque = s.isOpaque;
-  c.alpha = static_cast<float>(s.alpha);
-  c.colorR = static_cast<float>(s.color.r);
-  c.colorG = static_cast<float>(s.color.g);
-  c.colorB = static_cast<float>(s.color.b);
-  c.colorA = static_cast<float>(s.color.a);
-  c.hasBuffer = s.externalTexture != nullptr;
-  c.bufferFrame = s.frameNumber;
-  c.bufferId = s.externalTexture ? s.externalTexture->getId() : 0;
-  return c;
-}
+// Deep-copy the reachable snapshots out of `snapshotBuilder` into `frame`,
+// then stitch together parent/child ids using the lifecycle manager's
+// RequestedLayerState (the snapshot itself doesn't carry parentId).
+void captureFrame(CapturedFrame &frame, LayerSnapshotBuilder &snapshotBuilder,
+                  const LayerLifecycleManager &lifecycle) {
+  // Parent lookup by layer id. Built once; reused for every snapshot.
+  std::unordered_map<uint32_t, uint32_t> parentOf;
+  parentOf.reserve(lifecycle.getLayers().size());
+  for (const auto &rls : lifecycle.getLayers()) {
+    if (rls)
+      parentOf[rls->id] = rls->parentId;
+  }
 
-// Build the tree + rootIds for a captured frame by walking the reachable
-// hierarchy. Matches the "main-hierarchy only" filter SF uses for its
-// android.surfaceflinger.layers data source (TRACE_EXTRA off).
-void populateHierarchy(CapturedFrame &frame,
-                       LayerSnapshotBuilder &snapshotBuilder,
-                       const LayerLifecycleManager &lifecycle) {
-  // Walk snapshots and copy reachable ones into the frame.
+  // Keep only reachable snapshots — matches SF's own android.surfaceflinger
+  // .layers emit (offscreen hierarchy is gated behind TRACE_EXTRA).
+  frame.snapshots.reserve(snapshotBuilder.getSnapshots().size());
   for (const auto &snap : snapshotBuilder.getSnapshots()) {
     if (!snap)
       continue;
     if (snap->reachablilty != LayerSnapshot::Reachablilty::Reachable)
       continue;
-    CapturedLayer cl = captureLayer(*snap);
-    // Look up parentId from the lifecycle manager (snapshot itself doesn't
-    // expose it directly; we take the RequestedLayerState as the source of
-    // truth).
-    for (const auto &rls : lifecycle.getLayers()) {
-      if (rls && rls->id == cl.id) {
-        cl.parentId = rls->parentId;
-        break;
-      }
-    }
-    frame.layersById.emplace(cl.id, std::move(cl));
+    frame.snapshots.push_back(*snap); // deep copy; sp<> refs travel with it
   }
-  // Connect children under parents; identify roots.
-  for (auto &[id, layer] : frame.layersById) {
-    if (layer.parentId != 0xffffffff &&
-        frame.layersById.count(layer.parentId)) {
-      frame.layersById[layer.parentId].childIds.push_back(id);
+  // Paint order (ascending globalZ) — makes rootIds/childIds deterministic.
+  std::sort(frame.snapshots.begin(), frame.snapshots.end(),
+            [](const LayerSnapshot &a, const LayerSnapshot &b) {
+              return a.globalZ < b.globalZ;
+            });
+
+  // Index + tree construction in paint order.
+  frame.byLayerId.reserve(frame.snapshots.size());
+  for (size_t i = 0; i < frame.snapshots.size(); i++) {
+    const uint32_t id = static_cast<uint32_t>(frame.snapshots[i].path.id);
+    frame.byLayerId[id] = i;
+    auto it = parentOf.find(id);
+    uint32_t parent = (it != parentOf.end()) ? it->second : UNASSIGNED_LAYER_ID;
+    frame.parentByLayerId[id] = parent;
+  }
+  for (size_t i = 0; i < frame.snapshots.size(); i++) {
+    const uint32_t id = static_cast<uint32_t>(frame.snapshots[i].path.id);
+    uint32_t parent = frame.parentByLayerId[id];
+    if (parent != UNASSIGNED_LAYER_ID && frame.byLayerId.count(parent)) {
+      frame.childrenByLayerId[parent].push_back(id);
     } else {
       frame.rootIds.push_back(id);
     }
   }
-  // Sort children by z within each parent (ascending — higher z paints on
-  // top). Same sort for roots.
-  auto byZ = [&frame](uint32_t a, uint32_t b) {
-    return frame.layersById[a].z < frame.layersById[b].z;
-  };
-  for (auto &[_, layer] : frame.layersById)
-    std::sort(layer.childIds.begin(), layer.childIds.end(), byZ);
-  std::sort(frame.rootIds.begin(), frame.rootIds.end(), byZ);
 }
 
 } // namespace
@@ -267,7 +248,34 @@ std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path) {
     frame.displaysChanged = entry.displays_changed();
     frame.displayWidth = dominantW;
     frame.displayHeight = dominantH;
-    populateHierarchy(frame, snapshotBuilder, lifecycleManager);
+    // Pick the LayerStack + rotation off whichever display in the current
+    // displayInfos best matches the dominant logical size — that's the one
+    // Output will render to. Also convert RotationFlags → ui::Rotation for
+    // setProjection's parameter type (first is a bitmask of ROT_{0,90,180,
+    // 270}|FLIP_{H,V}; we only care about the rotation component).
+    for (const auto &[layerStack, info] : displayInfos) {
+      if (info.info.logicalWidth == dominantW &&
+          info.info.logicalHeight == dominantH) {
+        frame.displayLayerStack = layerStack;
+        switch (info.rotationFlags & (android::ui::Transform::ROT_90 |
+                                      android::ui::Transform::ROT_180)) {
+        case android::ui::Transform::ROT_90:
+          frame.displayRotation = android::ui::ROTATION_90;
+          break;
+        case android::ui::Transform::ROT_180:
+          frame.displayRotation = android::ui::ROTATION_180;
+          break;
+        case android::ui::Transform::ROT_90 | android::ui::Transform::ROT_180:
+          frame.displayRotation = android::ui::ROTATION_270;
+          break;
+        default:
+          frame.displayRotation = android::ui::ROTATION_0;
+          break;
+        }
+        break;
+      }
+    }
+    captureFrame(frame, snapshotBuilder, lifecycleManager);
     out->frames.push_back(std::move(frame));
 
     lifecycleManager.commitChanges();

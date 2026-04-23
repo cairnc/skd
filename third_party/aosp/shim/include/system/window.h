@@ -7,6 +7,16 @@
 #define NATIVE_WINDOW_API_CPU 2
 #define NATIVE_WINDOW_API_EGL 1
 #define NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS 7
+
+// Upstream LayerFE.cpp consults these when applying display-inverse buffer
+// transforms. Values come from system/graphics-base.h; we never exercise that
+// inverse path in the viewer (rotation always 0), but the symbols must exist
+// for the file to compile.
+#define NATIVE_WINDOW_TRANSFORM_FLIP_H 0x01
+#define NATIVE_WINDOW_TRANSFORM_FLIP_V 0x02
+#define NATIVE_WINDOW_TRANSFORM_ROT_90 0x04
+#define NATIVE_WINDOW_TRANSFORM_ROT_180 0x03
+#define NATIVE_WINDOW_TRANSFORM_ROT_270 0x07
 static inline int native_window_api_connect(ANativeWindow *, int) { return 0; }
 static inline int native_window_api_disconnect(ANativeWindow *, int) {
   return 0;
