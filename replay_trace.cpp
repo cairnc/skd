@@ -7,7 +7,6 @@
 // the reconstructed snapshots so we can eyeball whether the FE is recreating
 // state correctly.
 
-#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +30,8 @@
 #include <TransactionState.h>
 #include <gui/LayerState.h>
 #include <gui/WindowInfo.h>
+
+#include "replay_diag.h"
 
 using android::BBinder;
 using android::layer_state_t;
@@ -107,6 +108,18 @@ int main(int argc, char **argv) {
 
   printf("parsed %d packets, %zu transaction entries\n", trace.packet_size(),
          entries.size());
+
+  // How many entries carry display info? If none, geomLayerBounds fall back
+  // to the ±50000 no-display constant and will mismatch SF.
+  int displayChangeEntries = 0;
+  for (const auto *e : entries)
+    if (e->displays_changed())
+      displayChangeEntries++;
+  printf("  entries with displays_changed=true: %d (displays in first such = "
+         "%d)\n",
+         displayChangeEntries,
+         entries.front()->displays_changed() ? entries.front()->displays_size()
+                                             : 0);
   if (entries.empty()) {
     fprintf(stderr,
             "no android.surfaceflinger.transactions packets — recapture "
@@ -120,10 +133,46 @@ int main(int argc, char **argv) {
   LayerHierarchyBuilder hierarchyBuilder;
   LayerSnapshotBuilder snapshotBuilder;
   DisplayInfos displayInfos;
+
+  // SF's perfetto transaction trace doesn't always emit a starting-state entry
+  // with displays_changed=true (it depends on session mode). When it doesn't,
+  // the FE falls back to a ±50000 "max display bounds" constant. We can seed
+  // displayInfos from the first LayersSnapshotProto in the same trace —
+  // LayersSnapshotProto.displays has the same geometry SF saw at runtime.
+  bool sawDisplayInfo = false;
+  for (int i = 0; i < trace.packet_size() && !sawDisplayInfo; i++) {
+    const auto &pkt = trace.packet(i);
+    if (!pkt.has_surfaceflinger_layers_snapshot())
+      continue;
+    const auto &snap = pkt.surfaceflinger_layers_snapshot();
+    for (int j = 0; j < snap.displays_size(); j++) {
+      const auto &d = snap.displays(j);
+      if (!d.has_size())
+        continue;
+      android::surfaceflinger::frontend::DisplayInfo info;
+      info.info.displayId =
+          android::ui::LogicalDisplayId{static_cast<int32_t>(d.id())};
+      info.info.logicalWidth = d.size().w();
+      info.info.logicalHeight = d.size().h();
+      displayInfos.emplace_or_replace(
+          android::ui::LayerStack::fromValue(d.layer_stack()), info);
+      sawDisplayInfo = true;
+    }
+  }
+  printf("  seeded %zu display(s) from LayersSnapshotProto\n",
+         displayInfos.size());
   android::ShadowSettings globalShadowSettings{.ambientColor = {1, 1, 1, 1}};
 
   for (size_t i = 0; i < entries.size(); i++) {
     const auto &entry = *entries[i];
+    // Force displayChanges=true on every entry when we have seeded info.
+    // SF's rootSnapshot.geomLayerBounds is only recomputed when displayChanges
+    // is true, otherwise it defaults back to ±50000 via getRootSnapshot().
+    // SF gets away with this because, at runtime, its frontend caches each
+    // layer's bounds and new layers are rare. During replay we see many
+    // additions in later entries, so we need a fresh root every entry for
+    // them to inherit proper display-scale bounds.
+    const bool forceDisplayChangedThisEntry = sawDisplayInfo;
 
     std::vector<std::unique_ptr<RequestedLayerState>> addedLayers;
     addedLayers.reserve(entry.added_layers_size());
@@ -155,8 +204,9 @@ int main(int argc, char **argv) {
       destroyedHandles.push_back({entry.destroyed_layer_handles(j), ""});
     }
 
-    bool displayChanged = entry.displays_changed();
-    if (displayChanged) {
+    bool displayChanged =
+        entry.displays_changed() || forceDisplayChangedThisEntry;
+    if (entry.displays_changed()) {
       parser.fromProto(entry.displays(), displayInfos);
     }
 
@@ -185,32 +235,57 @@ int main(int argc, char **argv) {
     bool last = (i == entries.size() - 1);
     bool dumpNow =
         (dumpEvery > 0 && (i % dumpEvery) == 0) || (last && dumpLast);
-    if (dumpNow) {
-      size_t visibleCount = 0;
-      for (const auto &snap : snapshotBuilder.getSnapshots()) {
-        if (snap && snap->isVisible)
-          visibleCount++;
+    // At each entry where SF also emitted a layer snapshot, count-match
+    // against our reconstruction. Catches drift partway through the replay,
+    // not just at end.
+    auto sfIt = sfSnapshotsByVsync.find(entry.vsync_id());
+    if (sfIt != sfSnapshotsByVsync.end()) {
+      auto oursById = layerviewer::diag::indexOurSnapshots(snapshotBuilder);
+      auto sfById = layerviewer::diag::indexSfLayers(*sfIt->second);
+      int onlyOurs = 0, onlySf = 0;
+      for (const auto &[id, _] : oursById)
+        if (!sfById.count(id))
+          onlyOurs++;
+      for (const auto &[id, _] : sfById)
+        if (!oursById.count(id))
+          onlySf++;
+      if (dumpNow || onlyOurs || onlySf) {
+        printf("vsync=%" PRId64 " entry=%zu ours=%zu sf=%zu diff=+%d/-%d\n",
+               entry.vsync_id(), i, oursById.size(), sfById.size(), onlyOurs,
+               onlySf);
       }
-      // See if SF has its own snapshot at this vsync — if so, compare
-      // layer counts. Bounds / visibility would need deeper inspection.
-      auto it = sfSnapshotsByVsync.find(entry.vsync_id());
-      int sfLayers = -1;
-      if (it != sfSnapshotsByVsync.end()) {
-        sfLayers = it->second->layers().layers_size();
+    } else if (dumpNow) {
+      printf("vsync=%" PRId64
+             " entry=%zu layers=%zu (no sf snapshot at this vsync)\n",
+             entry.vsync_id(), i, lifecycleManager.getLayers().size());
+    }
+  }
+
+  // Per-layer diff against the last SF snapshot whose vsync <= the last
+  // entry's vsync. Layer snapshot packets don't always line up exactly with
+  // transaction entries (snapshots are emitted on commit, transactions on
+  // apply), so pick the latest SF snapshot at-or-before the final entry.
+  {
+    int64_t lastVsync = entries.back()->vsync_id();
+    const perfetto::protos::LayersSnapshotProto *sfLast = nullptr;
+    int64_t sfLastVsync = -1;
+    for (const auto &kv : sfSnapshotsByVsync) {
+      if (kv.first <= lastVsync && kv.first > sfLastVsync) {
+        sfLastVsync = kv.first;
+        sfLast = kv.second;
       }
-      printf("[%4zu/%zu] vsync=%" PRId64 " ts=%" PRId64
-             "ns layers=%zu snapshots=%zu visible=%zu  sf_layers=%s\n",
-             i + 1, entries.size(), entry.vsync_id(),
-             entry.elapsed_realtime_nanos(),
-             lifecycleManager.getLayers().size(),
-             snapshotBuilder.getSnapshots().size(), visibleCount,
-             sfLayers < 0 ? "-" : std::to_string(sfLayers).c_str());
+    }
+    if (sfLast) {
+      printf("\n=== per-layer diff (our final vsync=%" PRId64
+             " vs SF vsync=%" PRId64 ") ===\n",
+             lastVsync, sfLastVsync);
+      layerviewer::diag::diffSnapshotsAgainstSf(
+          snapshotBuilder, hierarchyBuilder, lifecycleManager, *sfLast);
     }
   }
 
   if (dumpLast) {
-    printf("\n=== final reconstructed snapshots (%zu) ===\n",
-           snapshotBuilder.getSnapshots().size());
+    printf("\n=== final reconstructed snapshots (sample) ===\n");
     int shown = 0;
     for (const auto &snap : snapshotBuilder.getSnapshots()) {
       if (!snap)

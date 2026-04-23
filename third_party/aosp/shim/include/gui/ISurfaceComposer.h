@@ -24,18 +24,26 @@ public:
 namespace android::gui {
 class ISurfaceComposerClient : public IBinder {
 public:
+  // Values sync'd to upstream aidl/android/gui/ISurfaceComposerClient.aidl.
+  // Using the wrong bits corrupts layer-creation flags — for example
+  // eNoColorFill being wrong makes all container layers "fill with black" and
+  // register as contentOpaque in the reconstructed snapshot.
   enum : uint32_t {
-    eHidden = 0x01,
-    eOpaque = 0x02,
-    eSecure = 0x80,
-    eSkipScreenshot = 0x40,
-    eNonPremultiplied = 0x100,
-    eCursorWindow = 0x200,
-    eProtectedByApp = 0x400,
-    eNoColorFill = 0x800,
-    eFXSurfaceEffect = 0x1,
-    eFXSurfaceBufferState = 0x2,
-    eFXSurfaceContainer = 0x4,
+    eHidden = 0x00000004,
+    eDestroyBackbuffer = 0x00000020,
+    eSkipScreenshot = 0x00000040,
+    eSecure = 0x00000080,
+    eNonPremultiplied = 0x00000100,
+    eOpaque = 0x00000400,
+    eProtectedByApp = 0x00000800,
+    eProtectedByDRM = 0x00001000,
+    eCursorWindow = 0x00002000,
+    eNoColorFill = 0x00004000,
+    eFXSurfaceBufferQueue = 0x00000000,
+    eFXSurfaceEffect = 0x00020000,
+    eFXSurfaceBufferState = 0x00040000,
+    eFXSurfaceContainer = 0x00080000,
+    eFXSurfaceMask = 0x000F0000,
   };
 };
 } // namespace android::gui
