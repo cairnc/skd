@@ -84,5 +84,50 @@ inline Cta861_3 translate(const android_cta861_3_metadata &metadata) {
                       metadata.maxFrameAverageLightLevel};
 }
 
+// layerviewer: PrintTo helper for Dataspace — AOSP defines this in libui's
+// debug utilities; the inline version here is enough for SF port code that
+// does `PrintTo(settings.outputDataspace, os)` in ostream overloads.
 } // namespace ui
 } // namespace android
+#include <ostream>
+
+// ADL finds PrintTo in the enum's owning namespaces. ui::Dataspace is a using
+// alias for android::hardware::graphics::common::V1_2::Dataspace, so that's
+// where these live.
+namespace android::hardware::graphics::common::V1_2 {
+inline void PrintTo(const Dataspace &d, ::std::ostream *os) {
+  *os << "Dataspace(" << static_cast<int32_t>(d) << ")";
+}
+inline void PrintTo(const PixelFormat &p, ::std::ostream *os) {
+  *os << "PixelFormat(" << static_cast<int32_t>(p) << ")";
+}
+inline void PrintTo(const ColorMode &c, ::std::ostream *os) {
+  *os << "ColorMode(" << static_cast<int32_t>(c) << ")";
+}
+} // namespace android::hardware::graphics::common::V1_2
+namespace android::hardware::graphics::common::V1_1 {
+inline void PrintTo(const RenderIntent &r, ::std::ostream *os) {
+  *os << "RenderIntent(" << static_cast<int32_t>(r) << ")";
+}
+} // namespace android::hardware::graphics::common::V1_1
+
+// AIDL enum stubs need toString(Enum) → std::string so SF port code can call
+// `aidl::...::toString(enum_value)`. Defined as free functions in each AIDL
+// namespace.
+#include <aidl/android/hardware/graphics/common/BlendMode.h>
+#include <aidl/android/hardware/graphics/composer3/DimmingStage.h>
+#include <aidl/android/hardware/graphics/composer3/RenderIntent.h>
+#include <string>
+namespace aidl::android::hardware::graphics::common {
+inline std::string toString(BlendMode v) {
+  return "BlendMode(" + std::to_string(static_cast<int32_t>(v)) + ")";
+}
+} // namespace aidl::android::hardware::graphics::common
+namespace aidl::android::hardware::graphics::composer3 {
+inline std::string toString(DimmingStage v) {
+  return "DimmingStage(" + std::to_string(static_cast<int32_t>(v)) + ")";
+}
+inline std::string toString(RenderIntent v) {
+  return "RenderIntent(" + std::to_string(static_cast<int32_t>(v)) + ")";
+}
+} // namespace aidl::android::hardware::graphics::composer3

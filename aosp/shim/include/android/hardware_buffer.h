@@ -4,6 +4,11 @@
 #pragma once
 #include <stdint.h>
 
+// Usage bit used by SkiaBackendTexture paths; mirror the NDK constant.
+#ifndef AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT
+#define AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT (1ULL << 14)
+#endif
+
 extern "C" {
 typedef struct AHardwareBuffer AHardwareBuffer;
 

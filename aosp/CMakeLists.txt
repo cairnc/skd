@@ -72,6 +72,16 @@ target_include_directories(aosp_libui PUBLIC libui/include)
 target_link_libraries(aosp_libui PUBLIC
     aosp_platform aosp_libutils aosp_libbase aosp_libmath aosp_arect)
 
+# ---- libtonemap ----
+add_library(aosp_tonemap STATIC tonemap/src/tonemap.cpp)
+target_include_directories(aosp_tonemap PUBLIC tonemap/include)
+target_link_libraries(aosp_tonemap PUBLIC aosp_platform aosp_libmath aosp_libui)
+
+# ---- libshaders ----
+add_library(aosp_shaders STATIC shaders/src/shaders.cpp)
+target_include_directories(aosp_shaders PUBLIC shaders/include)
+target_link_libraries(aosp_shaders PUBLIC aosp_platform aosp_libmath aosp_libui aosp_tonemap)
+
 # ---- Perfetto SF layer-trace protos ----
 add_subdirectory(perfetto_protos)
 

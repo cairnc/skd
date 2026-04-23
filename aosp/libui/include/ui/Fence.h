@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <android-base/unique_fd.h>
 #include <cstdint>
 #include <memory>
 #include <utils/Errors.h>
@@ -25,6 +26,9 @@ public:
   static const sp<Fence> NO_FENCE;
 
   Fence() = default;
+  // Accept the same shapes AOSP's Fence does: raw fd, base::unique_fd, move.
+  explicit Fence(int fd) : mFd(fd) {}
+  explicit Fence(base::unique_fd &&fd) : mFd(fd.release()) {}
   // Non-copyable; AOSP uses sp<>.
   Fence(const Fence &) = delete;
   Fence &operator=(const Fence &) = delete;
@@ -33,7 +37,9 @@ public:
   status_t wait(int /*timeoutMs*/) { return OK; }
   status_t waitForever(const char * /*name*/) { return OK; }
 
-  int dup() const { return -1; }
+  // Raw sync FD (real AOSP returns -1 for NO_FENCE). Our stub usually has -1.
+  int get() const { return mFd; }
+  int dup() const { return mFd < 0 ? -1 : ::dup(mFd); }
   nsecs_t getSignalTime() const { return 0; }
   Status getStatus() const { return Status::Signaled; }
   bool isValid() const { return false; }
@@ -43,6 +49,9 @@ public:
                          const sp<Fence> & /*b*/) {
     return a ? a : NO_FENCE;
   }
+
+private:
+  int mFd = -1;
 };
 
 } // namespace android

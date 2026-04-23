@@ -2,6 +2,8 @@
 #pragma once
 #include <cutils/trace.h>
 
+#define SFTRACE_ENABLED() 0
+
 #define SFTRACE_CALL() ((void)0)
 #define SFTRACE_NAME(name) ((void)0)
 #define SFTRACE_INT(name, value) ((void)0)

@@ -21,6 +21,12 @@ struct DisplayLuts {
   base::unique_fd lutFileDescriptor;
   std::vector<int32_t> offsets;
   std::vector<Entry> lutProperties;
+
+  const base::unique_fd &getLutFileDescriptor() const {
+    return lutFileDescriptor;
+  }
+  const std::vector<int32_t> &getOffsets() const { return offsets; }
+  const std::vector<Entry> &getLutProperties() const { return lutProperties; }
 };
 
 } // namespace android::gui
