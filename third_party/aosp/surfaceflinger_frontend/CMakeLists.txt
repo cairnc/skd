@@ -12,6 +12,7 @@ target_link_libraries(aosp_surfaceflinger_frontend PUBLIC
     aosp_platform
     aosp_libutils aosp_libbase aosp_libmath aosp_ftl aosp_libui
     aosp_compositionengine aosp_renderengine
+    aosp_perfetto_protos
 )
 if(NOT MSVC)
     target_compile_options(aosp_surfaceflinger_frontend PRIVATE

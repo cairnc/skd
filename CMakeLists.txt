@@ -70,6 +70,9 @@ target_link_libraries(layerviewer PRIVATE imgui SDL3::SDL3-static skia aosp)
 add_executable(make-fake-trace make_fake_trace.cpp)
 target_link_libraries(make-fake-trace PRIVATE aosp_perfetto_protos)
 
+add_executable(replay-trace replay_trace.cpp)
+target_link_libraries(replay-trace PRIVATE aosp_perfetto_protos)
+
 if(APPLE)
     target_link_libraries(layerviewer PRIVATE
         "-framework OpenGL"

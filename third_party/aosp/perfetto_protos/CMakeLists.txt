@@ -12,6 +12,7 @@ set(PROTO_FILES
     protos/perfetto/trace/android/surfaceflinger_common.proto
     protos/perfetto/trace/android/surfaceflinger_layers.proto
     protos/perfetto/trace/android/surfaceflinger_transactions.proto
+    protos/perfetto/trace/trace.proto
 )
 
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
@@ -40,7 +41,8 @@ endforeach()
 
 add_library(aosp_perfetto_protos STATIC ${GEN_SRCS})
 target_include_directories(aosp_perfetto_protos PUBLIC
-    ${GEN_DIR}
+    ${GEN_DIR}          # so generated cross-includes "protos/perfetto/..." resolve
+    ${GEN_DIR}/protos   # so upstream-style <perfetto/trace/...> resolves
     ${Protobuf_INCLUDE_DIRS}
 )
 target_link_libraries(aosp_perfetto_protos PUBLIC ${Protobuf_LIBRARIES})

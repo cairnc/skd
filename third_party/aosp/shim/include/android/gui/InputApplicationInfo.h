@@ -9,5 +9,9 @@ struct InputApplicationInfo : public Parcelable {
   sp<IBinder> token;
   std::string name;
   int64_t dispatchingTimeoutMillis = 0;
+  bool operator==(const InputApplicationInfo &other) const {
+    return token == other.token && name == other.name &&
+           dispatchingTimeoutMillis == other.dispatchingTimeoutMillis;
+  }
 };
 } // namespace android::gui

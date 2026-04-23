@@ -18,7 +18,11 @@
 
 #include <binder/Parcelable.h>
 
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace android::gui {
 
