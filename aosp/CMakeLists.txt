@@ -75,8 +75,11 @@ target_link_libraries(aosp_libui PUBLIC
 # ---- Perfetto SF layer-trace protos ----
 add_subdirectory(perfetto_protos)
 
+# ---- RenderEngine (Skia/Ganesh + our Desktop-GL variant) ----
+add_subdirectory(renderengine)
+
 # Convenience aggregate.
 add_library(aosp INTERFACE)
 target_link_libraries(aosp INTERFACE
     aosp_libutils aosp_libbase aosp_libmath aosp_arect aosp_ftl aosp_libui
-    aosp_perfetto_protos)
+    aosp_perfetto_protos aosp_renderengine)
