@@ -1184,19 +1184,12 @@ int main(int argc, char **argv) {
                                                  unsigned int glTexId) {
     if (w == 0 || h == 0 || glTexId == 0)
       return;
-    // Cap raster resolution: 4K layers × Skia-raster is real CPU work,
-    // and the watermark reads fine even when downsampled at sample time.
-    const uint32_t kMaxSide = 512;
-    uint32_t rw = std::min(w, kMaxSide);
-    uint32_t rh = std::min(h, kMaxSide);
-    // Preserve aspect so the watermark doesn't stretch.
-    if (w > h)
-      rh = std::max<uint32_t>(1, (rw * h) / w);
-    else
-      rw = std::max<uint32_t>(1, (rh * w) / h);
+    // Rasterize at the buffer's full w×h — RE/Skia wraps the GL texture
+    // with the GraphicBuffer's reported dimensions, so shrinking the
+    // texture storage here would desync them and stretch/skew the UVs.
 
     SkImageInfo info =
-        SkImageInfo::Make(rw, rh, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+        SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
     sk_sp<SkSurface> surface = SkSurfaces::Raster(info);
     if (!surface)
       return;
@@ -1207,12 +1200,12 @@ int main(int argc, char **argv) {
     SkPaint p;
     p.setStyle(SkPaint::kFill_Style);
     p.setColor4f(light, nullptr);
-    c->drawRect(SkRect::MakeWH(rw, rh), p);
+    c->drawRect(SkRect::MakeWH(w, h), p);
 
     p.setColor4f(dark, nullptr);
-    const float cell = std::max(16.f, std::min<float>(rw, rh) / 8.f);
-    for (float y = 0; y < rh; y += cell) {
-      for (float x = 0; x < rw; x += cell) {
+    const float cell = std::max(16.f, std::min<float>(w, h) / 8.f);
+    for (float y = 0; y < h; y += cell) {
+      for (float x = 0; x < w; x += cell) {
         if ((static_cast<int>(x / cell) + static_cast<int>(y / cell)) & 1)
           continue;
         c->drawRect(SkRect::MakeXYWH(x, y, cell, cell), p);
@@ -1220,7 +1213,7 @@ int main(int argc, char **argv) {
     }
 
     std::string label = std::to_string(bufferId);
-    float sz = FitFontSize(label.c_str(), rw * 0.85f, rh * 0.6f, 12.f, 480.f);
+    float sz = FitFontSize(label.c_str(), w * 0.85f, h * 0.6f, 12.f, 480.f);
     SkFont font(nullptr, sz);
     font.setEdging(SkFont::Edging::kAntiAlias);
     SkPaint textPaint;
@@ -1228,8 +1221,8 @@ int main(int argc, char **argv) {
     textPaint.setColor4f({0.08f, 0.08f, 0.12f, 0.95f}, nullptr);
     SkRect tb;
     font.measureText(label.c_str(), label.size(), SkTextEncoding::kUTF8, &tb);
-    c->drawString(label.c_str(), rw * 0.5f - tb.centerX(),
-                  rh * 0.5f - tb.centerY(), font, textPaint);
+    c->drawString(label.c_str(), w * 0.5f - tb.centerX(),
+                  h * 0.5f - tb.centerY(), font, textPaint);
 
     SkPixmap pm;
     if (!surface->peekPixels(&pm))
@@ -1238,13 +1231,8 @@ int main(int argc, char **argv) {
     GLint prev = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
     glBindTexture(GL_TEXTURE_2D, glTexId);
-    // glTexImage2D in the GraphicBuffer ctor allocated a w×h RGBA8
-    // texture with nullptr data. Re-upload at the raster size — smaller
-    // than w×h is fine, it just replaces with a shrunk version; we keep
-    // the texture dimensions at the raster dimensions via a full
-    // glTexImage2D.
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rw, rh, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, pm.addr());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 pm.addr());
     glBindTexture(GL_TEXTURE_2D, prev);
   });
 

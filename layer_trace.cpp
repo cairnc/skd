@@ -139,7 +139,6 @@ std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path) {
   }
 
   DisplayInfos displayInfos;
-  int32_t dominantW = 0, dominantH = 0;
   bool sawDisplayInfo = false;
   for (int i = 0; i < trace->packet_size() && !sawDisplayInfo; i++) {
     const auto &pkt = trace->packet(i);
@@ -158,10 +157,6 @@ std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path) {
       displayInfos.emplace_or_replace(
           android::ui::LayerStack::fromValue(d.layer_stack()), info);
       sawDisplayInfo = true;
-      if (d.size().w() * d.size().h() > dominantW * dominantH) {
-        dominantW = d.size().w();
-        dominantH = d.size().h();
-      }
     }
   }
 
@@ -210,12 +205,17 @@ std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path) {
         entry.displays_changed() || forceDisplayChangedThisEntry;
     if (entry.displays_changed()) {
       parser.fromProto(entry.displays(), displayInfos);
-      for (const auto &[layerStack, info] : displayInfos) {
-        if (info.info.logicalWidth * info.info.logicalHeight >
-            dominantW * dominantH) {
-          dominantW = info.info.logicalWidth;
-          dominantH = info.info.logicalHeight;
-        }
+    }
+    // Pick the current largest display from live displayInfos — this is what
+    // the transaction trace says the display is *right now*. Tracking a
+    // historical max here would pin the output buffer to whichever size came
+    // first and stretch later frames when the device rotates or resizes.
+    int32_t dominantW = 0, dominantH = 0;
+    for (const auto &[layerStack, info] : displayInfos) {
+      if (info.info.logicalWidth * info.info.logicalHeight >
+          dominantW * dominantH) {
+        dominantW = info.info.logicalWidth;
+        dominantH = info.info.logicalHeight;
       }
     }
 
