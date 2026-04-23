@@ -309,10 +309,9 @@ public:
 
     //! DEBUGGING ONLY: Enable tracking for this object.
     // enable -- enable/disable tracking
-    // retain -- when tracking is enable, if true, then we save a stack
-    // trace
-    //           for each reference and dereference; when retain == false,
-    //           we match up references and dereferences and keep only the
+    // retain -- when tracking is enable, if true, then we save a stack trace
+    //           for each reference and dereference; when retain == false, we
+    //           match up references and dereferences and keep only the
     //           outstanding ones.
 
     void trackMe(bool enable, bool retain);
@@ -353,16 +352,16 @@ protected:
 
   // Invoked after creation of initial strong pointer/reference.
   virtual void onFirstRef();
-  // Invoked when either the last strong reference goes away, or we need to
-  // undo the effect of an unnecessary onIncStrongAttempted.
+  // Invoked when either the last strong reference goes away, or we need to undo
+  // the effect of an unnecessary onIncStrongAttempted.
   virtual void onLastStrongRef(const void *id);
-  // Only called in OBJECT_LIFETIME_WEAK case.  Returns true if OK to promote
-  // to strong reference. May have side effects if it returns true. The first
-  // flags argument is always FIRST_INC_STRONG.
+  // Only called in OBJECT_LIFETIME_WEAK case.  Returns true if OK to promote to
+  // strong reference. May have side effects if it returns true.
+  // The first flags argument is always FIRST_INC_STRONG.
   // TODO: Remove initial flag argument.
   virtual bool onIncStrongAttempted(uint32_t flags, const void *id);
-  // Invoked in the OBJECT_LIFETIME_WEAK case when the last reference of
-  // either kind goes away.  Unused.
+  // Invoked in the OBJECT_LIFETIME_WEAK case when the last reference of either
+  // kind goes away.  Unused.
   // TODO: Remove.
   virtual void onLastWeakRef(const void *id);
 
@@ -456,8 +455,8 @@ public:
   }
 
   template <typename U> inline bool operator==(const sp<U> &o) const {
-    // Just comparing m_ptr fields is often dangerous, since wp<> may refer
-    // to an older object at the same address.
+    // Just comparing m_ptr fields is often dangerous, since wp<> may refer to
+    // an older object at the same address.
     if (o == nullptr) {
       return m_ptr == nullptr;
     } else {

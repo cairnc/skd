@@ -145,8 +145,7 @@ public:
     /**
      * Result from Looper_pollOnce() and Looper_pollAll():
      * The poll was awoken using wake() before the timeout expired
-     * and no callbacks were executed and no other file descriptors were
-     * ready.
+     * and no callbacks were executed and no other file descriptors were ready.
      */
     POLL_WAKE = -1,
 
@@ -188,8 +187,8 @@ public:
     /**
      * The file descriptor has encountered an error condition.
      *
-     * The looper always sends notifications about errors; it is not
-     * necessary to specify this event flag in the requested event set.
+     * The looper always sends notifications about errors; it is not necessary
+     * to specify this event flag in the requested event set.
      */
     EVENT_ERROR = 1 << 2,
 
@@ -198,8 +197,8 @@ public:
      * For example, indicates that the remote end of a pipe or socket was
      * closed.
      *
-     * The looper always sends notifications about hangups; it is not
-     * necessary to specify this event flag in the requested event set.
+     * The looper always sends notifications about hangups; it is not necessary
+     * to specify this event flag in the requested event set.
      */
     EVENT_HANGUP = 1 << 3,
 
@@ -207,9 +206,8 @@ public:
      * The file descriptor is invalid.
      * For example, the file descriptor was closed prematurely.
      *
-     * The looper always sends notifications about invalid file descriptors;
-     * it is not necessary to specify this event flag in the requested event
-     * set.
+     * The looper always sends notifications about invalid file descriptors; it
+     * is not necessary to specify this event flag in the requested event set.
      */
     EVENT_INVALID = 1 << 4,
   };
@@ -260,12 +258,12 @@ public:
    *
    * Returns a value >= 0 containing an identifier if its file descriptor has
    * data and it has no callback function (requiring the caller here to handle
-   * it). In this (and only this) case outFd, outEvents and outData will
-   * contain the poll events and data associated with the fd, otherwise they
-   * will be set to NULL.
+   * it). In this (and only this) case outFd, outEvents and outData will contain
+   * the poll events and data associated with the fd, otherwise they will be set
+   * to NULL.
    *
-   * This method does not return until it has finished invoking the
-   * appropriate callbacks for all file descriptors that were signalled.
+   * This method does not return until it has finished invoking the appropriate
+   * callbacks for all file descriptors that were signalled.
    */
   int pollOnce(int timeoutMillis, int *outFd, int *outEvents, void **outData);
   inline int pollOnce(int timeoutMillis) {
@@ -274,8 +272,8 @@ public:
 
   /**
    * Like pollOnce(), but performs all pending callbacks until all
-   * data has been consumed or a file descriptor is available with no
-   * callback. This function will never return POLL_CALLBACK.
+   * data has been consumed or a file descriptor is available with no callback.
+   * This function will never return POLL_CALLBACK.
    */
   int pollAll(int timeoutMillis, int *outFd, int *outEvents, void **outData);
   inline int pollAll(int timeoutMillis) {
@@ -295,23 +293,23 @@ public:
    * If the same file descriptor was previously added, it is replaced.
    *
    * "fd" is the file descriptor to be added.
-   * "ident" is an identifier for this event, which is returned from
-   * pollOnce(). The identifier must be >= 0, or POLL_CALLBACK if providing a
-   * non-NULL callback. "events" are the poll events to wake up on.  Typically
-   * this is EVENT_INPUT. "callback" is the function to call when there is an
-   * event on the file descriptor. "data" is a private data pointer to supply
-   * to the callback.
+   * "ident" is an identifier for this event, which is returned from pollOnce().
+   * The identifier must be >= 0, or POLL_CALLBACK if providing a non-NULL
+   * callback. "events" are the poll events to wake up on.  Typically this is
+   * EVENT_INPUT. "callback" is the function to call when there is an event on
+   * the file descriptor. "data" is a private data pointer to supply to the
+   * callback.
    *
    * There are two main uses of this function:
    *
-   * (1) If "callback" is non-NULL, then this function will be called when
-   * there is data on the file descriptor.  It should execute any events it
-   * has pending, appropriately reading from the file descriptor.  The 'ident'
-   * is ignored in this case.
+   * (1) If "callback" is non-NULL, then this function will be called when there
+   * is data on the file descriptor.  It should execute any events it has
+   * pending, appropriately reading from the file descriptor.  The 'ident' is
+   * ignored in this case.
    *
-   * (2) If "callback" is NULL, the 'ident' will be returned by
-   * Looper_pollOnce when its file descriptor has data available, requiring
-   * the caller to take care of processing it.
+   * (2) If "callback" is NULL, the 'ident' will be returned by Looper_pollOnce
+   * when its file descriptor has data available, requiring the caller to take
+   * care of processing it.
    *
    * Returns 1 if the file descriptor was added, 0 if the arguments were
    * invalid.
@@ -330,8 +328,8 @@ public:
             void *data);
 
   /**
-   * May be useful for testing, instead of executing a looper on another
-   * thread for code expecting a looper, you can call callbacks directly.
+   * May be useful for testing, instead of executing a looper on another thread
+   * for code expecting a looper, you can call callbacks directly.
    */
   bool getFdStateDebug(int fd, int *ident, int *events, sp<LooperCallback> *cb,
                        void **data);
@@ -339,15 +337,14 @@ public:
   /**
    * Removes a previously added file descriptor from the looper.
    *
-   * When this method returns, it is safe to close the file descriptor since
-   * the looper will no longer have a reference to it.  However, it is
-   * possible for the callback to already be running or for it to run one last
-   * time if the file descriptor was already signalled.  Calling code is
-   * responsible for ensuring that this case is safely handled. For example,
-   * if the callback takes care of removing itself during its own execution
-   * either by returning 0 or by calling this method, then it can be
-   * guaranteed to not be invoked again at any later time unless registered
-   * anew.
+   * When this method returns, it is safe to close the file descriptor since the
+   * looper will no longer have a reference to it.  However, it is possible for
+   * the callback to already be running or for it to run one last time if the
+   * file descriptor was already signalled.  Calling code is responsible for
+   * ensuring that this case is safely handled. For example, if the callback
+   * takes care of removing itself during its own execution either by returning
+   * 0 or by calling this method, then it can be guaranteed to not be invoked
+   * again at any later time unless registered anew.
    *
    * A simple way to avoid this problem is to use the version of addFd() that
    * takes a sp<LooperCallback> instead of a bare function pointer.  The
@@ -422,11 +419,10 @@ public:
   void removeMessages(const sp<MessageHandler> &handler, int what);
 
   /**
-   * Returns whether this looper's thread is currently polling for more work
-   * to do. This is a good signal that the loop is still alive rather than
-   * being stuck handling a callback.  Note that this method is intrinsically
-   * racy, since the state of the loop can change before you get the result
-   * back.
+   * Returns whether this looper's thread is currently polling for more work to
+   * do. This is a good signal that the loop is still alive rather than being
+   * stuck handling a callback.  Note that this method is intrinsically racy,
+   * since the state of the loop can change before you get the result back.
    */
   bool isPolling() const;
 

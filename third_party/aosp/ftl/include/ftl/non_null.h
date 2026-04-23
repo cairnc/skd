@@ -89,8 +89,8 @@ public:
     return get();
   }
 
-  // Move operations. These break the invariant, so care must be taken to
-  // avoid subsequent access.
+  // Move operations. These break the invariant, so care must be taken to avoid
+  // subsequent access.
 
   constexpr NonNull(NonNull &&) = default;
   constexpr NonNull &operator=(NonNull &&) = default;

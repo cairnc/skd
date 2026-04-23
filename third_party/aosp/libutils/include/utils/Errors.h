@@ -39,8 +39,8 @@ enum {
 #ifndef NO_ERROR
   // Win32 #defines NO_ERROR as well.  It has the same value, so there's no
   // real conflict, though it's a bit awkward.
-  NO_ERROR = OK, // Deprecated synonym for `OK`. Prefer `OK` because it
-                 // doesn't conflict with Windows.
+  NO_ERROR = OK, // Deprecated synonym for `OK`. Prefer `OK` because it doesn't
+                 // conflict with Windows.
 #endif
 
   UNKNOWN_ERROR = (-2147483647 - 1), // INT32_MIN value

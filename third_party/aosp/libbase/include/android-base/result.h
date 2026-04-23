@@ -460,11 +460,11 @@ public:
 
 #ifdef __cpp_concepts
   // The idea here is to match this template method to any type (not simply
-  // trivial types). The reason for including a constraint is to take
-  // advantage of the fact that a constrained method always has strictly lower
-  // precedence than a non-constrained method in template specialization rules
-  // (thus avoiding ambiguity). So we use a universally matching constraint to
-  // mark this function as less preferable (but still accepting of all types).
+  // trivial types). The reason for including a constraint is to take advantage
+  // of the fact that a constrained method always has strictly lower precedence
+  // than a non-constrained method in template specialization rules (thus
+  // avoiding ambiguity). So we use a universally matching constraint to mark
+  // this function as less preferable (but still accepting of all types).
   template <impl::Universal U>
   operator Result<U, E, include_message>() const & {
     return unexpected(this->error_);

@@ -35,12 +35,12 @@ extern "C" {
 /**
  * Rectangular window area.
  *
- * This is the NDK equivalent of the android.graphics.Rect class in Java. It
- * is used with {@link ANativeActivityCallbacks::onContentRectChanged} event
+ * This is the NDK equivalent of the android.graphics.Rect class in Java. It is
+ * used with {@link ANativeActivityCallbacks::onContentRectChanged} event
  * callback and the ANativeWindow_lock() function.
  *
- * In a valid ARect, left <= right and top <= bottom. ARect with left=0,
- * top=10, right=1, bottom=11 contains only one pixel at x=0, y=10.
+ * In a valid ARect, left <= right and top <= bottom. ARect with left=0, top=10,
+ * right=1, bottom=11 contains only one pixel at x=0, y=10.
  */
 typedef struct ARect {
 #ifdef __cplusplus

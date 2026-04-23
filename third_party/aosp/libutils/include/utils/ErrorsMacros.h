@@ -114,8 +114,8 @@ template <> struct OkOrFail<status_t> {
   // function whose return type is status_t.
   operator status_t() && { return val_; }
 
-  // Or converts into Result<T, StatusT>. This is used when OR_RETURN is used
-  // in a function whose return type is Result<T, StatusT>.
+  // Or converts into Result<T, StatusT>. This is used when OR_RETURN is used in
+  // a function whose return type is Result<T, StatusT>.
 
   template <typename T> operator Result<T, StatusT>() && {
     return ResultError<StatusT>(std::move(val_));

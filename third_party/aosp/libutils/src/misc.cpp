@@ -88,9 +88,9 @@ void report_sysprop_change() {
 
 #if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)
   // libutils.so is double loaded; from the default namespace and from the
-  // 'sphal' namespace. Redirect the sysprop change event to the other
-  // instance of libutils.so loaded in the 'sphal' namespace so that listeners
-  // attached to that instance is also notified with this event.
+  // 'sphal' namespace. Redirect the sysprop change event to the other instance
+  // of libutils.so loaded in the 'sphal' namespace so that listeners attached
+  // to that instance is also notified with this event.
   static auto func = get_report_sysprop_change_func();
   if (func != nullptr) {
     (*func)();

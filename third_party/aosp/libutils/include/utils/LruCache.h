@@ -59,8 +59,8 @@ private:
   class KeyedEntry {
   public:
     virtual const TKey &getKey() const = 0;
-    // Make sure the right destructor is executed so that keys and values
-    // are deleted.
+    // Make sure the right destructor is executed so that keys and values are
+    // deleted.
     virtual ~KeyedEntry() {}
   };
 

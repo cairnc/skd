@@ -348,11 +348,11 @@ void *VectorImpl::_grow(size_t where, size_t amount) {
                       "new_size overflow");
 
   if (capacity() < new_size) {
-    // NOTE: This implementation used to resize vectors as per ((3*x + 1) /
-    // 2) (sigh..). Also note, the " + 1" was necessary to handle the
-    // special case where x == 1, where the resized_capacity will be equal
-    // to the old capacity without the +1. The old calculation wouldn't work
-    // properly if x was zero.
+    // NOTE: This implementation used to resize vectors as per ((3*x + 1) / 2)
+    // (sigh..). Also note, the " + 1" was necessary to handle the special case
+    // where x == 1, where the resized_capacity will be equal to the old
+    // capacity without the +1. The old calculation wouldn't work properly
+    // if x was zero.
     //
     // This approximates the old calculation, using (x + (x/2) + 1) instead.
     size_t new_capacity = 0;

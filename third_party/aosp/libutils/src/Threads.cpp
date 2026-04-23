@@ -137,12 +137,12 @@ int androidCreateRawThreadEtc(android_thread_func_t entryFunction,
 #if defined(__ANDROID__) /* valgrind is rejecting RT-priority create reqs */
   if (threadPriority != PRIORITY_DEFAULT || threadName != NULL) {
     // Now that the pthread_t has a method to find the associated
-    // android_thread_id_t (pid) from pthread_t, it would be possible to
-    // avoid this trampoline in some cases as the parent could set the
-    // properties for the child.  However, there would be a race condition
-    // because the child becomes ready immediately, and it doesn't work for
-    // the name. prctl(PR_SET_NAME) only works for self;
-    // prctl(PR_SET_THREAD_NAME) was proposed but not yet accepted.
+    // android_thread_id_t (pid) from pthread_t, it would be possible to avoid
+    // this trampoline in some cases as the parent could set the properties
+    // for the child.  However, there would be a race condition because the
+    // child becomes ready immediately, and it doesn't work for the name.
+    // prctl(PR_SET_NAME) only works for self; prctl(PR_SET_THREAD_NAME) was
+    // proposed but not yet accepted.
     thread_data_t *t = new thread_data_t;
     t->priority = threadPriority;
     t->threadName = threadName ? strdup(threadName) : NULL;
@@ -718,9 +718,8 @@ int Thread::_threadLoop(void *user) {
         // clear thread ID so that requestExitAndWait() does not exit if
         // called by a new thread using the same thread ID as this one.
         self->mThread = thread_id_t(-1);
-        // note that interested observers blocked in requestExitAndWait
-        // are awoken by broadcast, but blocked on mLock until break
-        // exits scope
+        // note that interested observers blocked in requestExitAndWait are
+        // awoken by broadcast, but blocked on mLock until break exits scope
         self->mThreadExitedCondition.broadcast();
         break;
       }
@@ -787,8 +786,8 @@ bool Thread::isRunning() const {
 
 #if defined(__ANDROID__)
 pid_t Thread::getTid() const {
-  // mTid is not defined until the child initializes it, and the caller may
-  // need it earlier
+  // mTid is not defined until the child initializes it, and the caller may need
+  // it earlier
   Mutex::Autolock _l(mLock);
   pid_t tid;
   if (mRunning) {

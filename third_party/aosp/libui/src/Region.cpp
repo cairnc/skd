@@ -123,8 +123,7 @@ static void reverseRectsResolvingJunctions(const Rect *begin, const Rect *end,
            current->bottom != (current + 1)->top) ||
           (spanDirection == direction_LTR &&
            current->top != (current + 1)->bottom)) {
-        // previous span not directly adjacent, don't check for T
-        // junctions
+        // previous span not directly adjacent, don't check for T junctions
         beginLastSpan = INT_MAX;
       } else {
         beginLastSpan = endLastSpan + 1;
@@ -157,8 +156,8 @@ static void reverseRectsResolvingJunctions(const Rect *begin, const Rect *end,
           right = prev.left;
         }
 
-        // if an entry in the previous span is too far right, nothing
-        // further left in the current span will need it
+        // if an entry in the previous span is too far right, nothing further
+        // left in the current span will need it
         if (prev.left >= right) {
           beginLastSpan = prevIndex;
         }
@@ -176,8 +175,8 @@ static void reverseRectsResolvingJunctions(const Rect *begin, const Rect *end,
           dst.push_back(Rect(left, top, prev.right, bottom));
           left = prev.right;
         }
-        // if an entry in the previous span is too far left, nothing
-        // further right in the current span will need it
+        // if an entry in the previous span is too far left, nothing further
+        // right in the current span will need it
         if (prev.right <= left) {
           beginLastSpan = prevIndex;
         }

@@ -422,8 +422,8 @@ private:
   ref_entry *mWeakRefs;
 
   bool mTrackEnabled;
-  // Collect stack traces on addref and removeref, instead of deleting the
-  // stack references on removeref that match the address ones.
+  // Collect stack traces on addref and removeref, instead of deleting the stack
+  // references on removeref that match the address ones.
   bool mRetain;
 
 #endif
@@ -655,10 +655,10 @@ bool RefBase::weakref_type::attemptIncStrong(const void *id) {
       // extended life-time.
       curCount = impl->mStrong.fetch_add(1, std::memory_order_relaxed);
       // If the strong reference count has already been incremented by
-      // someone else, the implementor of onIncStrongAttempted() is
-      // holding an unneeded reference.  So call onLastStrongRef() here to
-      // remove it. (No, this is not pretty.)  Note that we MUST NOT do
-      // this if we are in fact acquiring the first reference.
+      // someone else, the implementor of onIncStrongAttempted() is holding
+      // an unneeded reference.  So call onLastStrongRef() here to remove it.
+      // (No, this is not pretty.)  Note that we MUST NOT do this if we
+      // are in fact acquiring the first reference.
       if (curCount != 0 && curCount != INITIAL_STRONG_VALUE) {
         impl->mBase->onLastStrongRef(id);
       }
@@ -746,27 +746,26 @@ RefBase::~RefBase() {
     if (strongs == INITIAL_STRONG_VALUE) {
       // We never acquired a strong reference on this object.
 
-      // It would be nice to make this fatal, but many places use RefBase
-      // on the stack. However, this is dangerous because it's also common
-      // for code to use the sp<T>(T*) constructor, assuming that if the
-      // object is around, it is already owned by an sp<>.
-      ALOGW("RefBase: Explicit destruction, weak count = %d (in %p). Use "
-            "sp<> to manage this "
-            "object. Note - if weak count is 0, this leaks mRefs "
-            "(weakref_impl).",
-            mRefs->mWeak.load(), this);
+      // It would be nice to make this fatal, but many places use RefBase on the
+      // stack. However, this is dangerous because it's also common for code to
+      // use the sp<T>(T*) constructor, assuming that if the object is around,
+      // it is already owned by an sp<>.
+      ALOGW(
+          "RefBase: Explicit destruction, weak count = %d (in %p). Use sp<> to "
+          "manage this "
+          "object. Note - if weak count is 0, this leaks mRefs (weakref_impl).",
+          mRefs->mWeak.load(), this);
 
 #if ANDROID_UTILS_CALLSTACK_ENABLED
       CallStack::logStack(LOG_TAG);
 #endif
     } else if (strongs != 0) {
-      LOG_ALWAYS_FATAL("RefBase: object %p with strong count %d deleted. "
-                       "Double owned?",
-                       this, strongs);
+      LOG_ALWAYS_FATAL(
+          "RefBase: object %p with strong count %d deleted. Double owned?",
+          this, strongs);
     }
   }
-  // For debugging purposes, clear mRefs.  Ineffective against outstanding
-  // wp's.
+  // For debugging purposes, clear mRefs.  Ineffective against outstanding wp's.
   const_cast<weakref_impl *&>(mRefs) = nullptr;
 }
 

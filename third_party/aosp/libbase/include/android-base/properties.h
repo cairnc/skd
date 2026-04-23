@@ -86,11 +86,11 @@ public:
   explicit CachedProperty(const char *property_name);
 
   // Returns the current value of the underlying system property as cheaply as
-  // possible. The returned pointer is valid until the next call to Get.
-  // Because most callers are going to want to parse the string returned here
-  // and cache that as well, this function performs no locking, and is
-  // completely thread unsafe. It is the caller's responsibility to provide a
-  // lock for thread-safety.
+  // possible. The returned pointer is valid until the next call to Get. Because
+  // most callers are going to want to parse the string returned here and cache
+  // that as well, this function performs no locking, and is completely thread
+  // unsafe. It is the caller's responsibility to provide a lock for
+  // thread-safety.
   //
   // Note: *changed can be set to true even if the contents of the property
   // remain the same.

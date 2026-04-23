@@ -88,8 +88,8 @@ enum LogSeverity {
   INFO,
   WARNING,
   ERROR,
-  FATAL_WITHOUT_ABORT, // For loggability tests, this is considered identical
-                       // to FATAL.
+  FATAL_WITHOUT_ABORT, // For loggability tests, this is considered identical to
+                       // FATAL.
   FATAL,
 };
 

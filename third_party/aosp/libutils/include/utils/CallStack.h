@@ -84,10 +84,10 @@ public:
   // The replacement facility will be incompatible!
 
   // Debugging accesses to some basic functionality. These use weak symbols to
-  // avoid introducing a dependency on libutilscallstack. Such a dependency
-  // from libutils results in a cyclic build dependency. These routines can be
-  // called from within libutils. But if the actual library is unavailable,
-  // they do nothing.
+  // avoid introducing a dependency on libutilscallstack. Such a dependency from
+  // libutils results in a cyclic build dependency. These routines can be called
+  // from within libutils. But if the actual library is unavailable, they do
+  // nothing.
   //
   // DO NOT USE THESE. They will disappear.
   struct StackDeleter {

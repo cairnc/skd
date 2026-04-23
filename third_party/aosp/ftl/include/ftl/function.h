@@ -186,8 +186,8 @@ public:
   Function(std::nullptr_t) {}
   Function &operator=(std::nullptr_t) { return *this = Function(nullptr); }
 
-  // Constructing from NoOpTag sets up a a special no-op function which is
-  // valid to call, and which returns a default constructed return value.
+  // Constructing from NoOpTag sets up a a special no-op function which is valid
+  // to call, and which returns a default constructed return value.
   Function(NoOpTag) : function_(details::bind_opaque_no_op<Ret, Args...>()) {}
   Function &operator=(NoOpTag) { return *this = Function(no_op); }
 
@@ -195,8 +195,8 @@ public:
   // function object, however:
   //  * It must be trivially copyable, as the implementation makes a copy with
   //  memcpy().
-  //  * It must be trivially destructible, as the implementation doesn't
-  //  destroy the copy!
+  //  * It must be trivially destructible, as the implementation doesn't destroy
+  //  the copy!
   //  * It must fit in the limited internal storage, which enforces
   //  size/alignment restrictions.
 
@@ -280,9 +280,9 @@ private:
   using StoredFunction = Ret(void *, Args...);
 
   // The type of the opaque storage, used to hold an appropriate function
-  // object. The type stored here is ONLY known to the StoredFunction. We
-  // always use at least one std::intptr_t worth of storage, and always a
-  // multiple of that size.
+  // object. The type stored here is ONLY known to the StoredFunction. We always
+  // use at least one std::intptr_t worth of storage, and always a multiple of
+  // that size.
   using OpaqueStorage = typename OpaqueStorageTraits::type;
 
   // Internal constructor for creating from a raw opaque blob + function

@@ -72,10 +72,9 @@ status_t Tokenizer::open(const String8 &filename, Tokenizer **outTokenizer) {
         delete fileMap;
         fileMap = nullptr;
 
-        // Fall back to reading into a buffer since we can't mmap files
-        // in sysfs. The length we obtained from stat is wrong too (it
-        // will always be 4096) so we must trust that read will read the
-        // entire file.
+        // Fall back to reading into a buffer since we can't mmap files in
+        // sysfs. The length we obtained from stat is wrong too (it will always
+        // be 4096) so we must trust that read will read the entire file.
         buffer = new char[length];
         ownBuffer = true;
         ssize_t nrd = read(fd, buffer, length);

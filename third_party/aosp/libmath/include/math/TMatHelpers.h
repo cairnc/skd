@@ -420,11 +420,11 @@ template <template <typename U> class BASE, typename T>
 class TMatSquareFunctions {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
   friend inline CONSTEXPR BASE<T> PURE inverse(const BASE<T> &matrix) {
     return matrix::inverse(matrix);

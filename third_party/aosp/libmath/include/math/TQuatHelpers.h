@@ -76,11 +76,11 @@ public:
   }
 
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
 
   /* The operators below handle operation between quaternion of the same size
@@ -113,9 +113,10 @@ public:
    * faster than going (implicitly) through the quaternion multiplication. For
    * reference: we could use the code below instead, but it would be a lot
    * slower. friend inline constexpr BASE<T> PURE operator *(const BASE<T>& q,
-   * const BASE<T>& r) { return BASE<T>( q.w*r.w - q.x*r.x - q.y*r.y -
-   * q.z*r.z, q.w*r.x + q.x*r.w + q.y*r.z - q.z*r.y, q.w*r.y - q.x*r.z +
-   * q.y*r.w + q.z*r.x, q.w*r.z + q.x*r.y - q.y*r.x + q.z*r.w);
+   * const BASE<T>& r) { return BASE<T>( q.w*r.w - q.x*r.x - q.y*r.y - q.z*r.z,
+   *              q.w*r.x + q.x*r.w + q.y*r.z - q.z*r.y,
+   *              q.w*r.y - q.x*r.z + q.y*r.w + q.z*r.x,
+   *              q.w*r.z + q.x*r.y - q.y*r.x + q.z*r.w);
    *
    */
   friend inline constexpr QUATERNION<T> PURE operator*(QUATERNION<T> q,
@@ -147,11 +148,11 @@ template <template <typename T> class QUATERNION, typename T>
 class TQuatFunctions {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
 
   template <typename RT>
@@ -257,11 +258,11 @@ public:
 template <template <typename T> class QUATERNION, typename T> class TQuatDebug {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
   friend std::ostream &operator<<(std::ostream &stream,
                                   const QUATERNION<T> &q) {

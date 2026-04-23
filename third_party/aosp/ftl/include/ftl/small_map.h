@@ -91,12 +91,12 @@ public:
 
   // Constructs at most N key-value pairs in place by forwarding per-pair
   // constructor arguments. The template arguments K, V, and N are inferred
-  // using the deduction guide defined below. The syntax for listing pairs is
-  // as follows:
+  // using the deduction guide defined below. The syntax for listing pairs is as
+  // follows:
   //
-  //   ftl::SmallMap map = ftl::init::map<int, std::string>(123,
-  //   "abc")(-1)(42, 3u, '?'); static_assert(std::is_same_v<decltype(map),
-  //   ftl::SmallMap<int, std::string, 3>>);
+  //   ftl::SmallMap map = ftl::init::map<int, std::string>(123, "abc")(-1)(42,
+  //   3u, '?'); static_assert(std::is_same_v<decltype(map), ftl::SmallMap<int,
+  //   std::string, 3>>);
   //
   // The types of the key and value are deduced if the first pair contains
   // exactly two arguments:
@@ -141,8 +141,8 @@ public:
   // Returns whether a mapping exists for the given key.
   bool contains(const key_type &key) const { return get(key).has_value(); }
 
-  // Returns a reference to the value for the given key, or std::nullopt if
-  // the key was not found.
+  // Returns a reference to the value for the given key, or std::nullopt if the
+  // key was not found.
   //
   //   ftl::SmallMap map = ftl::init::map('a', 'A')('b', 'B')('c', 'C');
   //
@@ -174,15 +174,15 @@ public:
     return {};
   }
 
-  // Returns an iterator to an existing mapping for the given key, or the
-  // end() iterator otherwise.
+  // Returns an iterator to an existing mapping for the given key, or the end()
+  // iterator otherwise.
   const_iterator find(const key_type &key) const {
     return const_cast<SmallMap &>(*this).find(key);
   }
   iterator find(const key_type &key) { return find(key, begin()); }
 
-  // Inserts a mapping unless it exists. Returns an iterator to the inserted
-  // or existing mapping, and whether the mapping was inserted.
+  // Inserts a mapping unless it exists. Returns an iterator to the inserted or
+  // existing mapping, and whether the mapping was inserted.
   //
   // On emplace, if the map reaches its static or dynamic capacity, then all
   // iterators are invalidated. Otherwise, only the end() iterator is
@@ -205,8 +205,8 @@ public:
     }
   }
 
-  // Replaces a mapping if it exists, and returns an iterator to it. Returns
-  // the end() iterator otherwise.
+  // Replaces a mapping if it exists, and returns an iterator to it. Returns the
+  // end() iterator otherwise.
   //
   // The value is replaced via move constructor, so type V does not need to
   // define copy/move assignment, e.g. its data members may be const.
@@ -227,12 +227,11 @@ public:
     return it;
   }
 
-  // In-place counterpart of std::unordered_map's insert_or_assign. Returns
-  // true on emplace, or false on replace.
+  // In-place counterpart of std::unordered_map's insert_or_assign. Returns true
+  // on emplace, or false on replace.
   //
-  // The value is emplaced and replaced via move constructor, so type V does
-  // not need to define copy/move assignment, e.g. its data members may be
-  // const.
+  // The value is emplaced and replaced via move constructor, so type V does not
+  // need to define copy/move assignment, e.g. its data members may be const.
   //
   // On emplace, if the map reaches its static or dynamic capacity, then all
   // iterators are invalidated. Otherwise, only the end() iterator is
@@ -252,8 +251,8 @@ public:
 
   // Removes a mapping if it exists, and returns whether it did.
   //
-  // The last() and end() iterators, as well as those to the erased mapping,
-  // are invalidated.
+  // The last() and end() iterators, as well as those to the erased mapping, are
+  // invalidated.
   //
   bool erase(const key_type &key) { return erase(key, begin()); }
 

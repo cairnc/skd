@@ -95,9 +95,9 @@ class StaticVector final : details::ArrayTraits<T>,
 
   // There is ambiguity when constructing from two iterator-like elements like
   // pointers: they could be an iterator range, or arguments for in-place
-  // construction. Assume the latter unless they are input iterators and
-  // cannot be used to construct elements. If the former is intended, the
-  // caller can pass an IteratorRangeTag to disambiguate.
+  // construction. Assume the latter unless they are input iterators and cannot
+  // be used to construct elements. If the former is intended, the caller can
+  // pass an IteratorRangeTag to disambiguate.
   template <typename I, typename Traits = std::iterator_traits<I>>
   using is_input_iterator =
       std::conjunction<std::is_base_of<std::input_iterator_tag,
@@ -174,10 +174,9 @@ public:
     std::swap(size_, other.size_);
   }
 
-  // Constructs at most N elements. The template arguments T and N are
-  // inferred using the deduction guide defined below. Note that T is
-  // determined from the first element, and subsequent elements must have
-  // convertible types:
+  // Constructs at most N elements. The template arguments T and N are inferred
+  // using the deduction guide defined below. Note that T is determined from the
+  // first element, and subsequent elements must have convertible types:
   //
   //   ftl::StaticVector vector = {1, 2, 3};
   //   static_assert(std::is_same_v<decltype(vector), ftl::StaticVector<int,
@@ -236,8 +235,8 @@ public:
     return *this;
   }
 
-  // IsEmpty enables a fast path when the vector is known to be empty at
-  // compile time.
+  // IsEmpty enables a fast path when the vector is known to be empty at compile
+  // time.
   template <bool IsEmpty = false> void swap(StaticVector &);
 
   static constexpr size_type max_size() { return N; }
@@ -332,17 +331,17 @@ public:
   }
 
   // Erases an element, but does not preserve order. Rather than shifting
-  // subsequent elements, this moves the last element to the slot of the
-  // erased element.
+  // subsequent elements, this moves the last element to the slot of the erased
+  // element.
   //
-  // The last() and end() iterators, as well as those to the erased element,
-  // are invalidated.
+  // The last() and end() iterators, as well as those to the erased element, are
+  // invalidated.
   //
   void unstable_erase(const_iterator it) {
     std::destroy_at(it);
     if (it != last()) {
-      // Move last element and destroy its source for destructor side
-      // effects. This is only safe because exceptions are disabled.
+      // Move last element and destroy its source for destructor side effects.
+      // This is only safe because exceptions are disabled.
       construct_at(it, std::move(back()));
       std::destroy_at(last());
     }
@@ -365,13 +364,13 @@ private:
   // Recursion for in-place constructor.
   //
   // Construct element I by extracting its arguments from the InitializerList
-  // tuple. ArgIndex is the position of its first argument in Args, and
-  // ArgCount is the number of arguments. The Indices sequence corresponds to
-  // [0, ArgCount).
+  // tuple. ArgIndex is the position of its first argument in Args, and ArgCount
+  // is the number of arguments. The Indices sequence corresponds to [0,
+  // ArgCount).
   //
-  // The Sizes sequence lists the argument counts for elements after I, so
-  // Size is the ArgCount for the next element. The recursion stops when Sizes
-  // is empty for the last element.
+  // The Sizes sequence lists the argument counts for elements after I, so Size
+  // is the ArgCount for the next element. The recursion stops when Sizes is
+  // empty for the last element.
   //
   template <std::size_t I, std::size_t ArgIndex, std::size_t ArgCount,
             std::size_t... Indices, std::size_t Size, std::size_t... Sizes,

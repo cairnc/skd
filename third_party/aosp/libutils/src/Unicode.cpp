@@ -388,18 +388,14 @@ static char32_t utf8_4b_to_utf32(uint8_t c1, uint8_t c2, uint8_t c3,
          (c4 & 0x3f);
 }
 
-// TODO: current behavior of converting UTF8 to UTF-16 has a few issues
-// below
+// TODO: current behavior of converting UTF8 to UTF-16 has a few issues below
 //
-// 1. invalid trailing bytes (i.e. not b'10xxxxxx) are treated as valid
-// trailing
+// 1. invalid trailing bytes (i.e. not b'10xxxxxx) are treated as valid trailing
 //    bytes and follows normal conversion rules
-// 2. invalid leading byte (b'10xxxxxx) is treated as a valid single UTF-8
-// byte
+// 2. invalid leading byte (b'10xxxxxx) is treated as a valid single UTF-8 byte
 // 3. invalid leading byte (b'11111xxx) is treated as a valid leading byte
 //    (same as b'11110xxx) for a 4-byte UTF-8 sequence
-// 4. an invalid 4-byte UTF-8 sequence that translates to a codepoint <
-// U+10000
+// 4. an invalid 4-byte UTF-8 sequence that translates to a codepoint < U+10000
 //    will be converted as a valid UTF-16 character
 //
 // We keep the current behavior as is but with warnings logged, so as not to
@@ -458,8 +454,8 @@ ssize_t utf8_to_utf16_length(const uint8_t *u8str, size_t u8len,
 
 char16_t *utf8_to_utf16(const uint8_t *u8str, size_t u8len, char16_t *u16str,
                         size_t u16len) {
-  // A value > SSIZE_MAX is probably a negative value returned as an error
-  // and casted.
+  // A value > SSIZE_MAX is probably a negative value returned as an error and
+  // casted.
   LOG_ALWAYS_FATAL_IF(u16len == 0 || u16len > SSIZE_MAX, "u16len is %zu",
                       u16len);
   char16_t *end =
@@ -473,8 +469,8 @@ char16_t *utf8_to_utf16_no_null_terminator(const uint8_t *src, size_t srcLen,
   if (src == nullptr || srcLen == 0 || dstLen == 0) {
     return dst;
   }
-  // A value > SSIZE_MAX is probably a negative value returned as an error
-  // and casted.
+  // A value > SSIZE_MAX is probably a negative value returned as an error and
+  // casted.
   LOG_ALWAYS_FATAL_IF(dstLen > SSIZE_MAX, "dstLen is %zu", dstLen);
 
   const uint8_t *const in_end = src + srcLen;

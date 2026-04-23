@@ -67,8 +67,8 @@ SharedBuffer *SharedBuffer::editResize(size_t newSize) const {
     SharedBuffer *buf = const_cast<SharedBuffer *>(this);
     if (buf->mSize == newSize)
       return buf;
-    // Don't overflow if the combined size of the new buffer / header is
-    // larger than size_max.
+    // Don't overflow if the combined size of the new buffer / header is larger
+    // than size_max.
     LOG_ALWAYS_FATAL_IF((newSize >= (SIZE_MAX - sizeof(SharedBuffer))),
                         "Invalid buffer size %zu", newSize);
 

@@ -54,13 +54,12 @@ static void SplitByLogdChunks(LogId log_id, LogSeverity severity,
                               unsigned int line, const char *msg,
                               const F &log_function) {
   // The maximum size of a payload, after the log header that logd will accept
-  // is LOGGER_ENTRY_MAX_PAYLOAD, so subtract the other elements in the
-  // payload to find the size of the string that we can log in each pass. The
-  // protocol is documented in liblog/README.protocol.md. Specifically we
-  // subtract a byte for the priority, the length of the tag + its null
-  // terminator, and an additional byte for the null terminator on the
-  // payload.  We subtract an additional 32 bytes for slack, similar to
-  // java/android/util/Log.java.
+  // is LOGGER_ENTRY_MAX_PAYLOAD, so subtract the other elements in the payload
+  // to find the size of the string that we can log in each pass. The protocol
+  // is documented in liblog/README.protocol.md. Specifically we subtract a byte
+  // for the priority, the length of the tag + its null terminator, and an
+  // additional byte for the null terminator on the payload.  We subtract an
+  // additional 32 bytes for slack, similar to java/android/util/Log.java.
   ptrdiff_t max_size = LOGGER_ENTRY_MAX_PAYLOAD - strlen(tag) - 35;
   if (max_size <= 0) {
     abort();
@@ -96,8 +95,8 @@ static void SplitByLogdChunks(LogId log_id, LogSeverity severity,
                               new_line, length, message);
     }
 
-    // This should never fail, if it does and we set size_written to 0,
-    // which will skip this line and move to the next one.
+    // This should never fail, if it does and we set size_written to 0, which
+    // will skip this line and move to the next one.
     if (size_written < 0) {
       size_written = 0;
     }
@@ -106,24 +105,24 @@ static void SplitByLogdChunks(LogId log_id, LogSeverity severity,
 
   const char *newline = strchr(msg, '\n');
   while (newline != nullptr) {
-    // If we have data in the buffer and this next line doesn't fit, write
-    // the buffer.
+    // If we have data in the buffer and this next line doesn't fit, write the
+    // buffer.
     if (chunk_position != 0 &&
         chunk_position + (newline - msg) + 1 + file_header_size > max_size) {
       call_log_function();
     }
 
-    // Otherwise, either the next line fits or we have any empty buffer and
-    // too large of a line to ever fit, in both cases, we add it to the
-    // buffer and continue.
+    // Otherwise, either the next line fits or we have any empty buffer and too
+    // large of a line to ever fit, in both cases, we add it to the buffer and
+    // continue.
     write_to_logd_chunk(msg, newline - msg);
 
     msg = newline + 1;
     newline = strchr(msg, '\n');
   }
 
-  // If we have left over data in the buffer and we can fit the rest of msg,
-  // add it to the buffer then write the buffer.
+  // If we have left over data in the buffer and we can fit the rest of msg, add
+  // it to the buffer then write the buffer.
   if (chunk_position != 0 &&
       chunk_position + static_cast<int>(strlen(msg)) + 1 + file_header_size <=
           max_size) {

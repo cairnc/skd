@@ -75,9 +75,9 @@ public:
   }
 
   /* compound assignment from a another vector of the same type.
-   * These operators can be used for implicit conversion and  handle
-   * operations like "vector *= scalar" by letting the compiler implicitly
-   * convert a scalar to a vector (assuming the BASE<T> allows it).
+   * These operators can be used for implicit conversion and  handle operations
+   * like "vector *= scalar" by letting the compiler implicitly convert a scalar
+   * to a vector (assuming the BASE<T> allows it).
    */
   VECTOR<T> &operator+=(const VECTOR<T> &v) {
     VECTOR<T> &lhs = static_cast<VECTOR<T> &>(*this);
@@ -95,11 +95,11 @@ public:
   }
 
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
 
   /* The operators below handle operation between vectors of the same size
@@ -118,11 +118,11 @@ public:
     return lv -= rv;
   }
 
-  /* The operators below (which are not templates once this class is
-   * instanced, i.e.: BASE<T> is known) can be used for implicit conversion on
-   * both sides. These handle operations like "vector + scalar" and "scalar +
-   * vector" by letting the compiler implicitly convert a scalar to a vector
-   * (assuming the BASE<T> allows it).
+  /* The operators below (which are not templates once this class is instanced,
+   * i.e.: BASE<T> is known) can be used for implicit conversion on both sides.
+   * These handle operations like "vector + scalar" and "scalar + vector" by
+   * letting the compiler implicitly convert a scalar to a vector (assuming
+   * the BASE<T> allows it).
    */
   friend inline constexpr VECTOR<T> PURE operator+(VECTOR<T> lv,
                                                    const VECTOR<T> &rv) {
@@ -158,9 +158,9 @@ public:
   }
 
   /* compound assignment from a another vector of the same type.
-   * These operators can be used for implicit conversion and  handle
-   * operations like "vector *= scalar" by letting the compiler implicitly
-   * convert a scalar to a vector (assuming the BASE<T> allows it).
+   * These operators can be used for implicit conversion and  handle operations
+   * like "vector *= scalar" by letting the compiler implicitly convert a scalar
+   * to a vector (assuming the BASE<T> allows it).
    */
   VECTOR<T> &operator*=(const VECTOR<T> &v) {
     VECTOR<T> &lhs = static_cast<VECTOR<T> &>(*this);
@@ -178,11 +178,11 @@ public:
   }
 
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
 
   /* The operators below handle operation between vectors of the same size
@@ -201,11 +201,11 @@ public:
     return lv /= rv;
   }
 
-  /* The operators below (which are not templates once this class is
-   * instanced, i.e.: BASE<T> is known) can be used for implicit conversion on
-   * both sides. These handle operations like "vector * scalar" and "scalar *
-   * vector" by letting the compiler implicitly convert a scalar to a vector
-   * (assuming the BASE<T> allows it).
+  /* The operators below (which are not templates once this class is instanced,
+   * i.e.: BASE<T> is known) can be used for implicit conversion on both sides.
+   * These handle operations like "vector * scalar" and "scalar * vector" by
+   * letting the compiler implicitly convert a scalar to a vector (assuming
+   * the BASE<T> allows it).
    */
   friend inline constexpr VECTOR<T> PURE operator*(VECTOR<T> lv,
                                                    const VECTOR<T> &rv) {
@@ -281,11 +281,11 @@ template <template <typename T> class VECTOR, typename T>
 class TVecComparisonOperators {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
   template <typename RT>
   friend inline bool PURE operator==(const VECTOR<T> &lv,
@@ -407,11 +407,11 @@ public:
 template <template <typename T> class VECTOR, typename T> class TVecFunctions {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
   template <typename RT>
   friend inline CONSTEXPR T PURE dot(const VECTOR<T> &lv,
@@ -602,11 +602,11 @@ public:
 template <template <typename T> class VECTOR, typename T> class TVecDebug {
 public:
   /*
-   * NOTE: the functions below ARE NOT member methods. They are friend
-   * functions with they definition inlined with their declaration. This makes
-   * these template functions available to the compiler when (and only when)
-   * this class is instantiated, at which point they're only templated on the
-   * 2nd parameter (the first one, BASE<T> being known).
+   * NOTE: the functions below ARE NOT member methods. They are friend functions
+   * with they definition inlined with their declaration. This makes these
+   * template functions available to the compiler when (and only when) this
+   * class is instantiated, at which point they're only templated on the 2nd
+   * parameter (the first one, BASE<T> being known).
    */
   friend std::ostream &operator<<(std::ostream &stream, const VECTOR<T> &v) {
     stream << "< ";

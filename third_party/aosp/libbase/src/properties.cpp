@@ -319,8 +319,8 @@ const char *CachedProperty::Get(bool *changed) {
   }
 
   if (prop_info_ != nullptr) {
-    // Only bother re-reading the property if it's actually changed since
-    // last time.
+    // Only bother re-reading the property if it's actually changed since last
+    // time.
     uint32_t property_serial = __system_property_serial(prop_info_);
     if (property_serial != cached_property_serial_) {
       __system_property_read_callback(
@@ -328,9 +328,9 @@ const char *CachedProperty::Get(bool *changed) {
           [](void *data, const char *, const char *value, uint32_t serial) {
             CachedProperty *instance = reinterpret_cast<CachedProperty *>(data);
             instance->cached_property_serial_ = serial;
-            // Read only properties can be larger than PROP_VALUE_MAX,
-            // but also never change value or location, thus we return
-            // the pointer from the shared memory directly.
+            // Read only properties can be larger than PROP_VALUE_MAX, but also
+            // never change value or location, thus we return the pointer from
+            // the shared memory directly.
             if (instance->is_read_only_) {
               instance->read_only_property_ = value;
             } else {

@@ -127,8 +127,8 @@ struct BitSet32 {
     return n;
   }
 
-  // Finds the last marked bit in the set and clears it.  Returns the bit
-  // index. Result is undefined if all bits are unmarked.
+  // Finds the last marked bit in the set and clears it.  Returns the bit index.
+  // Result is undefined if all bits are unmarked.
   inline uint32_t clearLastMarkedBit() { return clearLastMarkedBit(value); }
 
   static inline uint32_t clearLastMarkedBit(uint32_t &value) {
@@ -293,8 +293,8 @@ struct BitSet64 {
     return n;
   }
 
-  // Finds the last marked bit in the set and clears it.  Returns the bit
-  // index. Result is undefined if all bits are unmarked.
+  // Finds the last marked bit in the set and clears it.  Returns the bit index.
+  // Result is undefined if all bits are unmarked.
   inline uint32_t clearLastMarkedBit() { return clearLastMarkedBit(value); }
 
   static inline uint32_t clearLastMarkedBit(uint64_t &value) {

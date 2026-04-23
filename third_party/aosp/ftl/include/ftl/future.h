@@ -57,9 +57,9 @@ public:
   using Base::get;
   using Base::wait_for;
 
-  // Attaches a continuation to the future. The continuation is a function
-  // that maps T to either R or ftl::Future<R>. In the former case, the chain
-  // wraps the result in a future as if by ftl::yield.
+  // Attaches a continuation to the future. The continuation is a function that
+  // maps T to either R or ftl::Future<R>. In the former case, the chain wraps
+  // the result in a future as if by ftl::yield.
   //
   //   auto future = ftl::yield(123);
   //   ftl::Future<char> futures[] = {ftl::yield('a'), ftl::yield('b')};

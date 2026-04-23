@@ -138,16 +138,15 @@ template <typename T, typename = void> struct OkOrFail {
   OkOrFail() = delete;
   OkOrFail(const T &) = delete;
 
-  // And there need to be one or more conversion operators that turns the
-  // error value of T into a target type. For example, for T = Result<V, E>,
-  // there can be ...
+  // And there need to be one or more conversion operators that turns the error
+  // value of T into a target type. For example, for T = Result<V, E>, there can
+  // be ...
   //
   // // for the case where OR_RETURN is called in a function expecting E
   // operator E()&& { return val_.error().code(); }
   //
-  // // for the case where OR_RETURN is called in a function expecting
-  // Result<U, E> template <typename U> operator Result<U, E>()&& { return
-  // val_.error(); }
+  // // for the case where OR_RETURN is called in a function expecting Result<U,
+  // E> template <typename U> operator Result<U, E>()&& { return val_.error(); }
 
   // And there needs to be a method that returns the string representation of
   // the fail value. static const std::string& ErrorMessage(const T& v); or

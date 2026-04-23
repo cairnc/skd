@@ -54,9 +54,8 @@ struct InitializerList;
 
 template <typename T, std::size_t... Sizes, typename... Types>
 struct InitializerList<T, std::index_sequence<Sizes...>, Types...> {
-  // Creates a superset InitializerList by appending the number of arguments
-  // to Sizes, and expanding Types with forwarding references for each
-  // argument.
+  // Creates a superset InitializerList by appending the number of arguments to
+  // Sizes, and expanding Types with forwarding references for each argument.
   template <typename... Args>
   [[nodiscard]] constexpr auto operator()(Args &&...args) && -> InitializerList<
       T, std::index_sequence<Sizes..., sizeof...(Args)>, Types..., Args &&...> {
@@ -64,10 +63,10 @@ struct InitializerList<T, std::index_sequence<Sizes...>, Types...> {
                            std::forward_as_tuple(std::forward<Args>(args)...))};
   }
 
-  // The temporary InitializerList returned by operator() is bound to an
-  // rvalue reference in container constructors, which extends the lifetime of
-  // any temporary arguments that this tuple refers to until the completion of
-  // the full expression containing the construction.
+  // The temporary InitializerList returned by operator() is bound to an rvalue
+  // reference in container constructors, which extends the lifetime of any
+  // temporary arguments that this tuple refers to until the completion of the
+  // full expression containing the construction.
   std::tuple<Types...> tuple;
 };
 

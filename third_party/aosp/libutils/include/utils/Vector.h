@@ -150,8 +150,8 @@ public:
   //! insert one or several items initialized from a prototype item
   ssize_t insertAt(const TYPE &prototype_item, size_t index,
                    size_t numItems = 1);
-  //! pop the top of the stack (removes the last element). No-op if the
-  //! stack's empty
+  //! pop the top of the stack (removes the last element). No-op if the stack's
+  //! empty
   inline void pop();
   //! pushes an item initialized with its default constructor
   inline void push();

@@ -46,10 +46,10 @@ public:
   constexpr Flags(const Flags<F> &f) : mFlags(f.mFlags) {}
 
   // Provide a non-explicit construct for non-enum classes since they easily
-  // convert to their underlying types (e.g. when used with bitwise
-  // operators). For enum classes, however, we should force them to be
-  // explicitly constructed from their underlying types to make full use of
-  // the type checker.
+  // convert to their underlying types (e.g. when used with bitwise operators).
+  // For enum classes, however, we should force them to be explicitly
+  // constructed from their underlying types to make full use of the type
+  // checker.
   template <typename T = U>
   constexpr Flags(T t, std::enable_if_t<!is_scoped_enum_v<F>, T> * = nullptr)
       : mFlags(t) {}
@@ -99,18 +99,17 @@ public:
 
     // iterator traits
 
-    // In the future we could make this a bidirectional const iterator
-    // instead of a forward iterator but it doesn't seem worth the added
-    // complexity at this point. This could not, however, be made a
-    // non-const iterator as assigning one flag to another is a non-sensical
-    // operation.
+    // In the future we could make this a bidirectional const iterator instead
+    // of a forward iterator but it doesn't seem worth the added complexity at
+    // this point. This could not, however, be made a non-const iterator as
+    // assigning one flag to another is a non-sensical operation.
     using iterator_category = std::input_iterator_tag;
     using value_type = F;
     // Per the C++ spec, because input iterators are not assignable the
-    // iterator's reference type does not actually need to be a reference.
-    // In fact, making it a reference would imply that modifying it would
-    // change the underlying Flags object, which is obviously wrong for the
-    // same reason this can't be a non-const iterator.
+    // iterator's reference type does not actually need to be a reference. In
+    // fact, making it a reference would imply that modifying it would change
+    // the underlying Flags object, which is obviously wrong for the same reason
+    // this can't be a non-const iterator.
     using reference = F;
     using difference_type = void;
     using pointer = void;
@@ -179,9 +178,9 @@ public:
   /*
    * Returns the stored set of flags.
    *
-   * Note that this returns the underlying type rather than the base enum
-   * class. This is because the value is no longer necessarily a strict member
-   * of the enum since the returned value could be multiple enum variants OR'd
+   * Note that this returns the underlying type rather than the base enum class.
+   * This is because the value is no longer necessarily a strict member of the
+   * enum since the returned value could be multiple enum variants OR'd
    * together.
    */
   U get() const { return mFlags; }

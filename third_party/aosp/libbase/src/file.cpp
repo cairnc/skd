@@ -229,10 +229,10 @@ bool ReadFdToString(borrowed_fd fd, std::string *content) {
   // be suitable. https://code.google.com/p/android/issues/detail?id=258500.
   struct stat sb;
   if (fstat(fd.get(), &sb) != -1 && sb.st_size > 0 && sb.st_size <= SSIZE_MAX) {
-    // Shrink the string capacity to fit the file, but if the capacity is
-    // only slightly larger than needed, avoid reallocating.
-    // std::string::reserve no longer lowers capacity after P0966R1, but it
-    // does round the request up a small amount (e.g. 8 or 16 bytes).
+    // Shrink the string capacity to fit the file, but if the capacity is only
+    // slightly larger than needed, avoid reallocating. std::string::reserve no
+    // longer lowers capacity after P0966R1, but it does round the request up a
+    // small amount (e.g. 8 or 16 bytes).
     size_t fd_size = sb.st_size;
     if (fd_size > content->capacity()) {
       content->reserve(fd_size);

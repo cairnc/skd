@@ -188,8 +188,7 @@ public:
   // doesn't set noexcept well, at least for copy ctor/assign, so set it
   // explicitly. Technically the copy/move assignment operators should also be
   // deleted if neither T nor E satisfies is_nothrow_move_constructible_v, but
-  // that would require making these operator= methods into template
-  // functions.
+  // that would require making these operator= methods into template functions.
   constexpr expected() = default;
   constexpr expected(const expected &rhs) noexcept(
       std::is_nothrow_copy_constructible_v<T> &&
@@ -656,9 +655,9 @@ public:
   template <
       typename G = E _ENABLE_IF(std::is_same_v<G, E> &&std::is_swappable_v<E>)>
   void swap(unexpected &other) noexcept(std::is_nothrow_swappable_v<E>) {
-    // Make std::swap visible to provide swap for STL and builtin types, but
-    // use an unqualified swap to invoke argument-dependent lookup to find
-    // the swap functions for user-declared types.
+    // Make std::swap visible to provide swap for STL and builtin types, but use
+    // an unqualified swap to invoke argument-dependent lookup to find the swap
+    // functions for user-declared types.
     using std::swap;
     swap(val_, other.val_);
   }

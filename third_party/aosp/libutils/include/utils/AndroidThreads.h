@@ -73,9 +73,9 @@ extern void androidSetCreateThreadFunc(android_create_thread_fn func);
 #if defined(__ANDROID__)
 // Change the priority AND scheduling group of a particular thread.  The
 // priority should be one of the ANDROID_PRIORITY constants.  Returns
-// INVALID_OPERATION if the priority set failed, else another value if just
-// the group set failed; in either case errno is set.  Thread ID zero means
-// current thread.
+// INVALID_OPERATION if the priority set failed, else another value if just the
+// group set failed; in either case errno is set.  Thread ID zero means current
+// thread.
 extern int androidSetThreadPriority(pid_t tid, int prio);
 
 // Get the current priority of a particular thread. Returns one of the

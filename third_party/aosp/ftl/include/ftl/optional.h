@@ -120,8 +120,8 @@ template <typename T> struct Optional final : std::optional<T> {
     return base::unexpected(std::forward<E>(e));
   }
 
-  // Delete new for this class. Its base doesn't have a virtual destructor,
-  // and if it got deleted via base class pointer, it would cause undefined
+  // Delete new for this class. Its base doesn't have a virtual destructor, and
+  // if it got deleted via base class pointer, it would cause undefined
   // behavior. There's not a good reason to allocate this object on the heap
   // anyway.
   static void *operator new(size_t) = delete;

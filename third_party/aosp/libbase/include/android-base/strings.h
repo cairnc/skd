@@ -66,15 +66,15 @@ template <typename T> std::string Trim(T &&t) {
     sv = std::forward<T>(t);
   } else if constexpr (std::is_convertible_v<T, std::string>) {
     // The previous version of this function allowed for types which are
-    // implicitly convertible to std::string but not to std::string_view.
-    // For these types we go through std::string first here in order to
-    // retain source compatibility.
+    // implicitly convertible to std::string but not to std::string_view. For
+    // these types we go through std::string first here in order to retain
+    // source compatibility.
     s = t;
     sv = s;
   } else {
-    static_assert(internal::always_false_v<T>,
-                  "Implicit conversion to std::string or std::string_view "
-                  "not possible");
+    static_assert(
+        internal::always_false_v<T>,
+        "Implicit conversion to std::string or std::string_view not possible");
   }
 
   // Skip initial whitespace.
@@ -107,14 +107,14 @@ std::string Join(ContainerT &&things, SeparatorT separator) {
     return {};
   } else if (things.size() == 1) {
     // Nothing to do! Return the first element if it's already a string-like
-    // type, otherwise fallthrough to the slower format-conversion case at
-    // the bottom of this function.
+    // type, otherwise fallthrough to the slower format-conversion case at the
+    // bottom of this function.
 
     if constexpr (std::is_convertible_v<ElementType, std::string>) {
       return *things.begin();
     } else if constexpr (std::is_constructible_v<std::string, ElementType>) {
-      // std::string_view is not implicitly convertible to std::string so
-      // do it explicitly, making a copy in this case.
+      // std::string_view is not implicitly convertible to std::string so do it
+      // explicitly, making a copy in this case.
       return std::string(*things.begin());
     }
   }
@@ -124,8 +124,8 @@ std::string Join(ContainerT &&things, SeparatorT separator) {
     // Use a much faster implementation for these types.
 
     // char separator types need special handling because they cannot be
-    // converted to std::string_view to determine their size, and they
-    // require a special std::string::append invocation below.
+    // converted to std::string_view to determine their size, and they require a
+    // special std::string::append invocation below.
     constexpr bool sepIsChar =
         std::is_same_v<std::remove_cv_t<SeparatorT>, char>;
     std::string_view::size_type sepSize;
@@ -151,6 +151,7 @@ std::string Join(ContainerT &&things, SeparatorT separator) {
         result.append(separator).append(*it);
     }
     return result;
+
   } else {
     // Some callers depend on the conversion performed by
     // std::ostream:operator<< to get string representations from non-string

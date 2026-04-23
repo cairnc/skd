@@ -67,16 +67,16 @@ public:
   status_t requestExitAndWait();
 
   // Wait until this object's thread exits. Returns immediately if not yet
-  // running. Do not call from this object's thread; will return WOULD_BLOCK
-  // in that case.
+  // running. Do not call from this object's thread; will return WOULD_BLOCK in
+  // that case.
   status_t join();
 
   // Indicates whether this thread is running or not.
   bool isRunning() const;
 
 #if defined(__ANDROID__)
-  // Return the thread's kernel ID, same as the thread itself calling
-  // gettid(), or -1 if the thread is not running.
+  // Return the thread's kernel ID, same as the thread itself calling gettid(),
+  // or -1 if the thread is not running.
   pid_t getTid() const;
 #endif
 
@@ -106,8 +106,8 @@ private:
   volatile bool mRunning;
   sp<Thread> mHoldSelf;
 #if defined(__ANDROID__)
-  // legacy for debugging, not used by getTid() as it is set by the child
-  // thread and so is not initialized until the child reaches that point
+  // legacy for debugging, not used by getTid() as it is set by the child thread
+  // and so is not initialized until the child reaches that point
   pid_t mTid;
 #endif
 };

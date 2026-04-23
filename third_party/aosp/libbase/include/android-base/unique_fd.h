@@ -141,8 +141,8 @@ private:
     // No-op.
   }
 
-  // Same as above, to select between Closer::Close(int) and
-  // Closer::Close(int, void*).
+  // Same as above, to select between Closer::Close(int) and Closer::Close(int,
+  // void*).
   template <typename T = Closer>
   static auto close(int fd, void *tag_value)
       -> decltype(T::Close(fd, tag_value), void()) {

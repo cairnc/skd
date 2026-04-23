@@ -44,10 +44,10 @@ namespace base {
 class MappedFile {
 public:
   /**
-   * Creates a new mapping of the file pointed to by `fd`. Unlike the
-   * underlying OS primitives, `offset` does not need to be page-aligned. If
-   * `PROT_WRITE` is set in `prot`, the mapping will be writable, otherwise it
-   * will be read-only. Mappings are always `MAP_SHARED`.
+   * Creates a new mapping of the file pointed to by `fd`. Unlike the underlying
+   * OS primitives, `offset` does not need to be page-aligned. If `PROT_WRITE`
+   * is set in `prot`, the mapping will be writable, otherwise it will be
+   * read-only. Mappings are always `MAP_SHARED`.
    */
   static std::unique_ptr<MappedFile> FromFd(borrowed_fd fd, off64_t offset,
                                             size_t length, int prot);

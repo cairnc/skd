@@ -232,11 +232,11 @@ public:
 #undef DISPATCH
 
   // Erases an element, but does not preserve order. Rather than shifting
-  // subsequent elements, this moves the last element to the slot of the
-  // erased element.
+  // subsequent elements, this moves the last element to the slot of the erased
+  // element.
   //
-  // The last() and end() iterators, as well as those to the erased element,
-  // are invalidated.
+  // The last() and end() iterators, as well as those to the erased element, are
+  // invalidated.
   //
   void unstable_erase(iterator it) {
     if (dynamic()) {
@@ -333,8 +333,7 @@ public:
   SmallVector(const SmallVector &) = default;
   SmallVector(SmallVector &&) = default;
 
-  // Constructs elements in place. See StaticVector for underlying
-  // constructor.
+  // Constructs elements in place. See StaticVector for underlying constructor.
   template <typename U, std::size_t... Sizes, typename... Types>
   SmallVector(
       InitializerList<U, std::index_sequence<Sizes...>, Types...> &&list)
@@ -420,8 +419,8 @@ private:
     } else {
       SmallVector vector(other.size());
 
-      // Consistently with StaticVector, T only requires copy/move
-      // construction from U, rather than copy/move assignment.
+      // Consistently with StaticVector, T only requires copy/move construction
+      // from U, rather than copy/move assignment.
       auto it = vector.begin();
       for (auto &element : other) {
         vector.replace(it++, std::move(element));
