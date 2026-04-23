@@ -9,6 +9,7 @@
 namespace android {
 
 class Parcel;
+class BBinder;
 
 class IBinder : public virtual RefBase {
 public:
@@ -18,12 +19,14 @@ public:
     static const String16 desc;
     return desc;
   }
+  virtual BBinder *localBinder() { return nullptr; }
 };
 
 class BBinder : public IBinder {
 public:
   BBinder() = default;
   ~BBinder() override = default;
+  BBinder *localBinder() override { return this; }
 };
 
 } // namespace android
