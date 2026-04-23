@@ -62,7 +62,7 @@ else()
     add_compile_options(-fno-rtti)
 endif()
 
-add_subdirectory(aosp)
+add_subdirectory(third_party/aosp)
 
 add_executable(layerviewer main.cpp layer_trace.cpp)
 target_link_libraries(layerviewer PRIVATE imgui SDL3::SDL3-static skia aosp)

@@ -5,4 +5,3 @@ build-*/
 imgui.ini
 *_layout.ini
 .DS_Store
-third_party/aosp/
