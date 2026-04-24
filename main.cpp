@@ -16,9 +16,11 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -337,6 +339,12 @@ struct AppState {
   // read one frame later to render an info line above the strip. Using
   // last-frame's value avoids a two-pass layout.
   int timelineHoverIdx = -1;
+  // Timeline pan+zoom (same UX as the preview: plain scroll pans,
+  // Cmd/Ctrl+scroll zooms around the cursor, click-drag pans). zoom=1 =
+  // "fit all entries into the strip width"; scrollX is in pixels of the
+  // virtual strip.
+  float timelineZoom = 1.f;
+  float timelineScrollX = 0.f;
   View3D wireframe3D;
   PreviewView preview;
 };
@@ -1226,8 +1234,74 @@ void DrawTransactionInspector(AppState &app) {
 }
 
 // ---------------------------------------------------------------------------
-// Timeline (Tracy-style scrubber)
+// Timeline — Perfetto-style tracks + slices.
 // ---------------------------------------------------------------------------
+// Layout:
+//   [time ruler     ]    — tick marks every pow-of-10 ns at current zoom
+//   [Frames         ]    — one slice per CapturedFrame
+//   [<pid/process>  ]    — one slice per transaction, one track per pid
+//   [<pid/process>  ]
+//   ...
+// Controls (copied from Perfetto):
+//   Plain wheel scroll         → pan
+//   Shift / Ctrl / Cmd + wheel → zoom, cursor-anchored
+//   W / S                      → zoom in / out at cursor
+//   A / D                      → pan left / right
+//   Click slice                → select (selects that transaction or frame)
+// ---------------------------------------------------------------------------
+
+// Front-truncate a string so its rendered width fits in maxPx. The tail
+// (the informative part of an Android package/activity name) stays
+// visible; a leading "..." signals truncation. Default ImGui font doesn't
+// ship the unicode ellipsis, so we use three ASCII dots.
+std::string TruncateFrontToWidth(const std::string &s, float maxPx) {
+  if (s.empty())
+    return s;
+  if (ImGui::CalcTextSize(s.c_str()).x <= maxPx)
+    return s;
+  const char *ell = "...";
+  float ellW = ImGui::CalcTextSize(ell).x;
+  if (ellW >= maxPx)
+    return ell;
+  int n = static_cast<int>(s.size());
+  for (int drop = 1; drop < n; drop++) {
+    std::string out;
+    out.reserve(3 + (n - drop));
+    out.append(ell);
+    out.append(s, drop, n - drop);
+    if (ImGui::CalcTextSize(out.c_str()).x <= maxPx)
+      return out;
+  }
+  return ell;
+}
+
+// Pretty-format a nanosecond duration for ruler labels, picking the biggest
+// unit where the integer part is >= 1 AND using only as many decimals as the
+// tick step itself has (so "1s", "100ms", "250ms" — never "1.00s", etc.).
+std::string FormatNs(double ns, int64_t stepNs = 1) {
+  struct Unit {
+    double scale;
+    const char *suffix;
+  };
+  const Unit units[] = {{1e9, "s"}, {1e6, "ms"}, {1e3, "us"}, {1.0, "ns"}};
+  const Unit *u = &units[3];
+  for (const auto &cand : units) {
+    if (std::abs(ns) >= cand.scale) {
+      u = &cand;
+      break;
+    }
+  }
+  double v = ns / u->scale;
+  double stepInUnit = double(stepNs) / u->scale;
+  int decimals = 0;
+  if (stepInUnit < 1.0)
+    decimals = 1;
+  if (stepInUnit < 0.1)
+    decimals = 2;
+  char fmt[32];
+  std::snprintf(fmt, sizeof(fmt), "%%.%df%s", decimals, u->suffix);
+  return android::base::StringPrintf(fmt, v);
+}
 
 void DrawTimeline(AppState &app) {
   if (!app.trace || app.trace->frames.empty()) {
@@ -1235,9 +1309,10 @@ void DrawTimeline(AppState &app) {
     return;
   }
   const auto &frames = app.trace->frames;
+  const auto &txns = app.trace->transactions;
   const int n = static_cast<int>(frames.size());
 
-  // Row 1: nav buttons + which frame is currently selected.
+  // --- Toolbar -----------------------------------------------------------
   if (ImGui::Button("prev frame"))
     app.frameIndex = std::max(0, app.frameIndex - 1);
   if (ImGui::IsItemHovered())
@@ -1251,115 +1326,352 @@ void DrawTimeline(AppState &app) {
   ImGui::Text("Frame %d / %d   vsync=%lld   ts=%.3fs", app.frameIndex + 1, n,
               (long long)frames[app.frameIndex].vsyncId,
               frames[app.frameIndex].tsNs / 1e9);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("reset view")) {
+    app.timelineZoom = 1.f;
+    app.timelineScrollX = 0.f;
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Reset zoom (1x) and scroll to 0");
 
-  // Row 2: hover detail (or a placeholder so the layout is fixed). Uses
-  // last frame's captured hover index — one-frame latency but no
-  // two-pass layout needed, and the cursor moves smoothly enough that
-  // the delay isn't visible.
+  // Hover detail line (one-frame-latency — cursor under the strip next
+  // frame uses this row for its summary).
   if (app.timelineHoverIdx >= 0 && app.timelineHoverIdx < n) {
     const auto &hf = frames[app.timelineHoverIdx];
-    ImGui::Text("hover: entry %d   vsync=%lld   ts=%.3fs   txns=%d   "
-                "+layers=%d   -handles=%d   displays=%s   reachable=%zu",
+    ImGui::Text("frame %d  vsync=%lld  ts=%.3fs  txns=%d  +layers=%d  "
+                "-handles=%d  displays=%s  reachable=%zu",
                 app.timelineHoverIdx, (long long)hf.vsyncId, hf.tsNs / 1e9,
                 hf.txnCount, hf.addedCount, hf.destroyedHandleCount,
                 hf.displaysChanged ? "changed" : "-", hf.snapshots.size());
   } else {
-    ImGui::TextDisabled("hover a frame on the strip below to see its summary");
+    ImGui::TextDisabled(
+        "scroll = pan · shift/ctrl + scroll = zoom · W/S zoom · A/D pan");
   }
 
-  // The strip: a tall InvisibleButton we draw over.
-  ImVec2 avail = ImGui::GetContentRegionAvail();
-  const float stripH = std::max(60.f, avail.y);
-  ImVec2 origin = ImGui::GetCursorScreenPos();
-  ImVec2 size(avail.x, stripH);
-  if (size.x < 1 || size.y < 1)
+  // --- Track list --------------------------------------------------------
+  struct Track {
+    int pid;          // -1 for the Frames track
+    std::string name; // "Frames" or the process cmdline (if resolved)
+  };
+  std::vector<Track> tracks;
+  tracks.push_back({-1, "Frames"});
+  {
+    std::set<int32_t> pids;
+    for (const auto &t : txns)
+      pids.insert(t.pid);
+    for (int32_t pid : pids) {
+      auto it = app.trace->pidNames.find(pid);
+      tracks.push_back(
+          {pid, it != app.trace->pidNames.end() ? it->second : std::string()});
+    }
+  }
+  const int numTracks = static_cast<int>(tracks.size());
+  if (numTracks == 0)
     return;
 
-  ImGui::InvisibleButton("##timeline", size);
-  bool hovered = ImGui::IsItemHovered();
-  bool active = ImGui::IsItemActive();
+  const float kRowH = 22.f;
+  const float kRulerH = 22.f;
+  const int64_t t0Ns = frames.front().tsNs;
+  const int64_t t1Ns = frames.back().tsNs;
+  const int64_t totalNs = std::max<int64_t>(1, t1Ns - t0Ns);
 
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  // Background.
-  dl->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
-                    IM_COL32(20, 20, 28, 255));
+  // Consistent per-pid color so each process's track stays recognisable.
+  auto pidColor = [](int pid) -> ImU32 {
+    uint32_t h = uint32_t(pid) * 2654435761u;
+    uint8_t r = 70 + ((h >> 0) & 0xff) / 2;
+    uint8_t g = 70 + ((h >> 8) & 0xff) / 2;
+    uint8_t b = 80 + ((h >> 16) & 0xff) / 2;
+    return IM_COL32(r, g, b, 255);
+  };
 
-  const float perFrame = size.x / std::max(1, n);
-  const int64_t t0 = frames.front().tsNs;
-  const int64_t t1 = frames.back().tsNs;
-  const float totalMs = (t1 - t0) / 1e6f;
+  // Hover state collected from all timeline cells this frame.
+  int hoverFrameIdx = -1;
+  int hoverTxnIdx = -1;
+  bool anyTimelineHovered = false;
+  bool anyTimelineClicked = false; // left-click fell on a timeline cell
+  const ImVec2 mouse = ImGui::GetMousePos();
 
-  // Gridlines every ~100ms.
+  // Cache the timeline cell geometry so the pan/zoom math below (outside
+  // the table) uses the same reference as the slice drawing inside the
+  // cells. Captured in the ruler cell (first row, col 2).
+  float timelineCellW = 0.f;
+  float timelineCellLeft = 0.f;
+
+  ImGuiTableFlags tflags = ImGuiTableFlags_Resizable |
+                           ImGuiTableFlags_BordersInnerV |
+                           ImGuiTableFlags_NoPadInnerX;
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 0));
+  if (!ImGui::BeginTable("timeline_split", 3, tflags)) {
+    ImGui::PopStyleVar();
+    return;
+  }
+  ImGui::TableSetupColumn("pid", ImGuiTableColumnFlags_WidthFixed, 48.f);
+  ImGui::TableSetupColumn("track", ImGuiTableColumnFlags_WidthFixed, 180.f);
+  ImGui::TableSetupColumn("timeline", ImGuiTableColumnFlags_WidthStretch);
+
+  // --- Ruler row ---------------------------------------------------------
+  ImGui::TableNextRow(0, kRulerH);
+  ImGui::TableSetColumnIndex(0);
+  ImGui::TextDisabled("pid");
+  ImGui::TableSetColumnIndex(1);
+  ImGui::TextDisabled("track");
+  ImGui::TableSetColumnIndex(2);
   {
-    ImU32 gridCol = IM_COL32(60, 60, 80, 180);
-    int step = (totalMs > 2000) ? 500 : (totalMs > 500) ? 100 : 10;
-    for (float ms = step; ms < totalMs; ms += step) {
-      float frac = ms / std::max(1.f, totalMs);
-      float x = origin.x + frac * size.x;
-      dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y), gridCol);
-      std::string label = android::base::StringPrintf("%.0fms", ms);
-      dl->AddText(ImVec2(x + 2, origin.y + 2), IM_COL32(160, 160, 180, 255),
-                  label.c_str());
+    // Draw the ruler in this cell. First read the cell's width so we can
+    // size the virtual timeline against it. Capture the cell left edge
+    // for the input block below — all timeline cells share the same X.
+    ImVec2 cellTL = ImGui::GetCursorScreenPos();
+    float cellW = ImGui::GetContentRegionAvail().x;
+    timelineCellW = std::max(8.f, cellW);
+    timelineCellLeft = cellTL.x;
+
+    // Capture invisible button for ruler-area input. Hovering the ruler
+    // also pans/zooms the whole timeline.
+    ImGui::InvisibleButton("##ruler", ImVec2(timelineCellW, kRulerH));
+    bool rulerHovered = ImGui::IsItemHovered();
+    anyTimelineHovered = anyTimelineHovered || rulerHovered;
+
+    const float virtW = timelineCellW * std::max(1.f, app.timelineZoom);
+    app.timelineScrollX = std::clamp(app.timelineScrollX, 0.f,
+                                     std::max(0.f, virtW - timelineCellW));
+    const float scrollX = app.timelineScrollX;
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(
+        cellTL, ImVec2(cellTL.x + timelineCellW, cellTL.y + kRulerH), true);
+    double nsPerPixel = double(totalNs) / double(virtW);
+    double targetStepNs = 120.0 * nsPerPixel;
+    static const int64_t kSteps[] = {
+        1,         2,         5,         10,         20,         50,
+        100,       200,       500,       1000,       2000,       5000,
+        10000,     20000,     50000,     100000,     200000,     500000,
+        1000000,   2000000,   5000000,   10000000,   20000000,   50000000,
+        100000000, 200000000, 500000000, 1000000000, 2000000000, 5000000000};
+    int64_t step = kSteps[0];
+    for (int64_t s : kSteps) {
+      step = s;
+      if (double(s) >= targetStepNs)
+        break;
+    }
+    int64_t firstTick = ((int64_t(scrollX * nsPerPixel) / step)) * step;
+    for (int64_t ns = firstTick; ns <= totalNs; ns += step) {
+      float x =
+          cellTL.x - scrollX + float(double(ns) / double(totalNs) * virtW);
+      if (x < cellTL.x - 10)
+        continue;
+      if (x > cellTL.x + timelineCellW)
+        break;
+      dl->AddLine(ImVec2(x, cellTL.y), ImVec2(x, cellTL.y + kRulerH),
+                  IM_COL32(80, 80, 100, 255));
+      dl->AddText(ImVec2(x + 2, cellTL.y + 2), IM_COL32(180, 180, 200, 255),
+                  FormatNs(double(ns), step).c_str());
+    }
+    dl->AddLine(ImVec2(cellTL.x, cellTL.y + kRulerH),
+                ImVec2(cellTL.x + timelineCellW, cellTL.y + kRulerH),
+                IM_COL32(70, 70, 90, 255));
+    dl->PopClipRect();
+  }
+
+  // --- Track rows --------------------------------------------------------
+  for (int ti = 0; ti < numTracks; ti++) {
+    const auto &tr = tracks[ti];
+    ImGui::TableNextRow(0, kRowH);
+
+    // Col 0: pid.
+    ImGui::TableSetColumnIndex(0);
+    if (tr.pid == -1)
+      ImGui::TextUnformatted("");
+    else
+      ImGui::Text("%d", tr.pid);
+
+    // Col 1: track name. ImGui's own text rendering + cell clip handles
+    // truncation at the column border; hover the cell for the full name.
+    ImGui::TableSetColumnIndex(1);
+    std::string display = (tr.pid == -1) ? std::string("Frames") : tr.name;
+    if (display.empty())
+      display = "(unknown)";
+    ImGui::TextUnformatted(display.c_str());
+    if (ImGui::IsItemHovered() && tr.pid != -1)
+      ImGui::SetTooltip("pid %d  %s", tr.pid, display.c_str());
+
+    // Col 2: timeline slices for this track.
+    ImGui::TableSetColumnIndex(2);
+    ImVec2 cellTL = ImGui::GetCursorScreenPos();
+    float cellW = ImGui::GetContentRegionAvail().x;
+    if (cellW < 1.f)
+      continue;
+    timelineCellW = std::max(8.f, cellW); // same as ruler's
+
+    ImGui::PushID(ti);
+    ImGui::InvisibleButton("##row", ImVec2(timelineCellW, kRowH));
+    bool rowHovered = ImGui::IsItemHovered();
+    anyTimelineHovered = anyTimelineHovered || rowHovered;
+    bool rowClicked =
+        rowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    ImGui::PopID();
+
+    const float virtW = timelineCellW * std::max(1.f, app.timelineZoom);
+    const float scrollX = app.timelineScrollX; // clamped in ruler cell
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    // Alt-row background.
+    if (ti & 1)
+      dl->AddRectFilled(cellTL,
+                        ImVec2(cellTL.x + timelineCellW, cellTL.y + kRowH),
+                        IM_COL32(26, 26, 32, 255));
+    dl->PushClipRect(cellTL, ImVec2(cellTL.x + timelineCellW, cellTL.y + kRowH),
+                     true);
+
+    auto drawSlice = [&](int64_t ns, ImU32 col, const std::string &name,
+                         bool isCurrent) {
+      float x = cellTL.x - scrollX +
+                float(double(ns - t0Ns) / double(totalNs) * virtW);
+      float w = std::max(2.f, float(virtW / totalNs));
+      float sx0 = x - w * 0.5f;
+      float sx1 = x + w * 0.5f;
+      if (sx1 < cellTL.x || sx0 > cellTL.x + timelineCellW)
+        return false;
+      dl->AddRectFilled(ImVec2(sx0, cellTL.y + 2),
+                        ImVec2(sx1, cellTL.y + kRowH - 2), col);
+      if (isCurrent)
+        dl->AddRect(ImVec2(sx0 - 1, cellTL.y + 1),
+                    ImVec2(sx1 + 1, cellTL.y + kRowH - 1),
+                    IM_COL32(255, 200, 60, 255), 0.f, 0, 2.f);
+      if (sx1 - sx0 > 20 && !name.empty())
+        dl->AddText(ImVec2(sx0 + 3, cellTL.y + 3), IM_COL32(240, 240, 250, 255),
+                    name.c_str());
+      return rowHovered && mouse.x >= sx0 && mouse.x <= sx1;
+    };
+
+    if (tr.pid == -1) {
+      for (int i = 0; i < n; i++) {
+        const auto &f = frames[i];
+        int busy = std::min(255, 60 + f.txnCount * 18);
+        ImU32 col = IM_COL32(40, busy, 90, 255);
+        std::string label =
+            android::base::StringPrintf("#%d (%d)", i, f.txnCount);
+        if (drawSlice(f.tsNs, col, label, i == app.frameIndex)) {
+          hoverFrameIdx = i;
+          if (rowClicked)
+            anyTimelineClicked = true;
+        }
+      }
+    } else {
+      ImU32 col = pidColor(tr.pid);
+      for (int i = 0; i < static_cast<int>(txns.size()); i++) {
+        const auto &t = txns[i];
+        if (t.pid != tr.pid)
+          continue;
+        std::string label =
+            t.layerChanges > 0
+                ? android::base::StringPrintf("%dL", t.layerChanges)
+                : std::string();
+        if (drawSlice(t.postTimeNs, col, label,
+                      i == app.selectedTransactionIdx)) {
+          hoverTxnIdx = i;
+          if (rowClicked)
+            anyTimelineClicked = true;
+        }
+      }
+    }
+
+    // Current-frame marker line for this row.
+    {
+      float x = cellTL.x - scrollX +
+                float(double(frames[app.frameIndex].tsNs - t0Ns) /
+                      double(totalNs) * virtW);
+      if (x >= cellTL.x && x <= cellTL.x + timelineCellW)
+        dl->AddLine(ImVec2(x, cellTL.y), ImVec2(x, cellTL.y + kRowH),
+                    IM_COL32(255, 200, 60, 140), 1.f);
+    }
+    dl->PopClipRect();
+  }
+
+  ImGui::EndTable();
+  ImGui::PopStyleVar();
+
+  // --- Input --------------------------------------------------------------
+  //  * plain wheel (trackpad pan)             → pan
+  //  * shift/ctrl/super + wheel               → zoom around cursor
+  //  * WASD (keyboard, while window focused)  → zoom/pan
+  //  * left click                             → select slice under cursor
+  ImGuiIO &io = ImGui::GetIO();
+  const float virtW = timelineCellW * std::max(1.f, app.timelineZoom);
+  app.timelineScrollX = std::clamp(app.timelineScrollX, 0.f,
+                                   std::max(0.f, virtW - timelineCellW));
+  const float scrollX = app.timelineScrollX;
+
+  // Pixel offset of the mouse into the timeline cell (clamped to its
+  // width). Used as the zoom anchor so the virtual-x under the cursor
+  // stays put through a zoom.
+  auto mouseCellX = [&]() {
+    return std::clamp(mouse.x - timelineCellLeft, 0.f, timelineCellW);
+  };
+
+  if (anyTimelineHovered) {
+    float wheelY = io.MouseWheel;
+    float wheelX = io.MouseWheelH;
+    bool zoomMod = io.KeyShift || io.KeyCtrl || io.KeySuper;
+    if (wheelY != 0.f && zoomMod) {
+      float oldZoom = app.timelineZoom;
+      float newZoom = std::clamp(oldZoom * std::pow(1.15f, wheelY), 1.f, 500.f);
+      if (newZoom != oldZoom) {
+        float anchorPx = mouseCellX();
+        float virtAtMouse = anchorPx + scrollX;
+        app.timelineZoom = newZoom;
+        app.timelineScrollX = virtAtMouse * (newZoom / oldZoom) - anchorPx;
+      }
+    } else if (wheelY != 0.f || wheelX != 0.f) {
+      app.timelineScrollX -= (wheelX + wheelY) * 30.f;
+    }
+
+    if (anyTimelineClicked) {
+      if (hoverFrameIdx >= 0) {
+        app.frameIndex = hoverFrameIdx;
+      } else if (hoverTxnIdx >= 0) {
+        app.selectedTransactionIdx = hoverTxnIdx;
+        if (app.autoSyncTimeline)
+          app.frameIndex = static_cast<int>(txns[hoverTxnIdx].frameIndex);
+        RaiseDockedTab("Transaction Inspector");
+      }
     }
   }
 
-  // Bars: one thin column per frame; shade = transaction count, tick marks
-  // on top for add/destroy/display-change events.
-  for (int i = 0; i < n; i++) {
-    const auto &f = frames[i];
-    float x0 = origin.x + i * perFrame;
-    float x1 = x0 + std::max(1.f, perFrame);
-
-    // Base tint tracks transaction count (busier frames are brighter).
-    int busy = std::min(255, 40 + f.txnCount * 20);
-    ImU32 col = IM_COL32(40, busy, 80, 255);
-    dl->AddRectFilled(ImVec2(x0, origin.y + size.y * 0.4f),
-                      ImVec2(x1, origin.y + size.y), col);
-
-    // Top band: events.
-    float evY = origin.y + 6;
-    if (f.addedCount > 0) {
-      dl->AddRectFilled(ImVec2(x0, evY), ImVec2(x1, evY + 8),
-                        IM_COL32(80, 200, 120, 255));
-    }
-    if (f.destroyedHandleCount > 0) {
-      dl->AddRectFilled(ImVec2(x0, evY + 10), ImVec2(x1, evY + 18),
-                        IM_COL32(220, 100, 80, 255));
-    }
-    if (f.displaysChanged) {
-      dl->AddRectFilled(ImVec2(x0, evY + 20), ImVec2(x1, evY + 28),
-                        IM_COL32(240, 200, 60, 255));
-    }
-  }
-
-  // Current-frame marker.
-  {
-    float x = origin.x + (app.frameIndex + 0.5f) * perFrame;
-    dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y),
-                IM_COL32(255, 200, 60, 255), 2.f);
-  }
-
-  // Hover + click. Hover info is rendered *above* the strip (Row 2 at the
-  // top of this function, using last frame's captured index) — this block
-  // just updates the captured index for the next frame.
-  if (hovered) {
-    ImVec2 m = ImGui::GetMousePos();
-    int hoverIdx = std::clamp(
-        static_cast<int>((m.x - origin.x) / std::max(1.f, perFrame)), 0, n - 1);
-    app.timelineHoverIdx = hoverIdx;
-    if (active)
-      app.frameIndex = hoverIdx;
-  } else {
-    app.timelineHoverIdx = -1;
-  }
-
-  // Keyboard shortcuts when timeline window is focused.
-  if (ImGui::IsWindowFocused()) {
+  // Keyboard nav — continuous (IsKeyDown + dt). Gated on the Timeline
+  // window having focus so WASD doesn't fire while you're typing in a
+  // text input somewhere else. Click anywhere on the strip to focus.
+  const bool windowFocused =
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+  if (windowFocused) {
+    const float dt = io.DeltaTime;
+    const float kPanPxPerSec = 900.f;
+    const float kZoomFactorPerSec = 3.5f;
+    auto zoomAt = [&](float factor) {
+      float old = app.timelineZoom;
+      float nz = std::clamp(old * factor, 1.f, 500.f);
+      if (nz == old)
+        return;
+      float anchorPx = anyTimelineHovered ? mouseCellX() : timelineCellW * 0.5f;
+      float virtAtAnchor = anchorPx + scrollX;
+      app.timelineZoom = nz;
+      app.timelineScrollX = virtAtAnchor * (nz / old) - anchorPx;
+    };
+    if (ImGui::IsKeyDown(ImGuiKey_A))
+      app.timelineScrollX -= kPanPxPerSec * dt;
+    if (ImGui::IsKeyDown(ImGuiKey_D))
+      app.timelineScrollX += kPanPxPerSec * dt;
+    if (ImGui::IsKeyDown(ImGuiKey_W))
+      zoomAt(std::pow(kZoomFactorPerSec, dt));
+    if (ImGui::IsKeyDown(ImGuiKey_S))
+      zoomAt(std::pow(1.f / kZoomFactorPerSec, dt));
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
       app.frameIndex = std::max(0, app.frameIndex - 1);
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
       app.frameIndex = std::min(n - 1, app.frameIndex + 1);
   }
+
+  // Capture hover frame index for next-frame info row.
+  app.timelineHoverIdx = hoverFrameIdx;
 }
 
 // ---------------------------------------------------------------------------
