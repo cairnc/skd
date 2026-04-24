@@ -21,7 +21,7 @@
 #include <FrontEnd/LayerSnapshot.h>
 #include <FrontEnd/LayerSnapshotBuilder.h>
 #include <FrontEnd/RequestedLayerState.h>
-#include <perfetto/trace/android/surfaceflinger_layers.pb.h>
+#include <perfetto/trace/perfetto_trace.pb.h>
 
 namespace layerviewer::diag {
 

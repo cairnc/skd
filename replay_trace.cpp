@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <perfetto/trace/trace.pb.h>
+#include <perfetto/trace/perfetto_trace.pb.h>
 
 #include <Client.h>
 #include <FrontEnd/LayerCreationArgs.h>

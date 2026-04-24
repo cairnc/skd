@@ -3,4 +3,4 @@
 // the .pb.h.
 #pragma once
 #pragma GCC system_header
-#include <perfetto/trace/android/surfaceflinger_layers.pb.h>
+#include <perfetto/trace/perfetto_trace.pb.h>

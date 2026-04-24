@@ -30,6 +30,24 @@ set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SDL)
 
+# Abseil + Protobuf (submodules). Abseil must be added first so protobuf's
+# abseil-cpp.cmake finds absl::strings already present and skips its own
+# FetchContent path. Protobuf v34.1 pins abseil 20250512.1 (see third_party/
+# protobuf/cmake/dependencies.cmake).
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/abseil-cpp)
+
+set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_CONFORMANCE OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_PROTOC_BINARIES ON CACHE BOOL "" FORCE)
+set(protobuf_ABSL_PROVIDER "package" CACHE STRING "" FORCE)
+add_subdirectory(third_party/protobuf)
+
 # ImGui (compiled from source via submodule), SDL3 + OpenGL3 backends.
 add_library(imgui STATIC
     third_party/imgui/imgui.cpp

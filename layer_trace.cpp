@@ -11,7 +11,7 @@
 #include <sstream>
 #include <unordered_set>
 
-#include <perfetto/trace/trace.pb.h>
+#include <perfetto/trace/perfetto_trace.pb.h>
 
 #include <Client.h>
 #include <FrontEnd/LayerCreationArgs.h>
