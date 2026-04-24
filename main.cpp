@@ -333,6 +333,10 @@ struct AppState {
   int selectedTransactionIdx = -1; // index into ReplayedTrace::transactions
   bool autoSyncTimeline = true;    // auto-move frameIndex on txn selection
   bool scrollTxnTableToSelection = false;
+  // Timeline hover — captured each frame while the user is over the strip,
+  // read one frame later to render an info line above the strip. Using
+  // last-frame's value avoids a two-pass layout.
+  int timelineHoverIdx = -1;
   View3D wireframe3D;
   PreviewView preview;
 };
@@ -1233,9 +1237,7 @@ void DrawTimeline(AppState &app) {
   const auto &frames = app.trace->frames;
   const int n = static_cast<int>(frames.size());
 
-  // Fixed-width controls first so their X positions don't shift with the
-  // varying width of the frame/vsync/ts label. Variable-width text lives
-  // at the end of the row where growth only moves nothing after it.
+  // Row 1: nav buttons + which frame is currently selected.
   if (ImGui::Button("prev frame"))
     app.frameIndex = std::max(0, app.frameIndex - 1);
   if (ImGui::IsItemHovered())
@@ -1249,6 +1251,21 @@ void DrawTimeline(AppState &app) {
   ImGui::Text("Frame %d / %d   vsync=%lld   ts=%.3fs", app.frameIndex + 1, n,
               (long long)frames[app.frameIndex].vsyncId,
               frames[app.frameIndex].tsNs / 1e9);
+
+  // Row 2: hover detail (or a placeholder so the layout is fixed). Uses
+  // last frame's captured hover index — one-frame latency but no
+  // two-pass layout needed, and the cursor moves smoothly enough that
+  // the delay isn't visible.
+  if (app.timelineHoverIdx >= 0 && app.timelineHoverIdx < n) {
+    const auto &hf = frames[app.timelineHoverIdx];
+    ImGui::Text("hover: entry %d   vsync=%lld   ts=%.3fs   txns=%d   "
+                "+layers=%d   -handles=%d   displays=%s   reachable=%zu",
+                app.timelineHoverIdx, (long long)hf.vsyncId, hf.tsNs / 1e9,
+                hf.txnCount, hf.addedCount, hf.destroyedHandleCount,
+                hf.displaysChanged ? "changed" : "-", hf.snapshots.size());
+  } else {
+    ImGui::TextDisabled("hover a frame on the strip below to see its summary");
+  }
 
   // The strip: a tall InvisibleButton we draw over.
   ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1322,26 +1339,18 @@ void DrawTimeline(AppState &app) {
                 IM_COL32(255, 200, 60, 255), 2.f);
   }
 
-  // Hover + click.
+  // Hover + click. Hover info is rendered *above* the strip (Row 2 at the
+  // top of this function, using last frame's captured index) — this block
+  // just updates the captured index for the next frame.
   if (hovered) {
     ImVec2 m = ImGui::GetMousePos();
     int hoverIdx = std::clamp(
         static_cast<int>((m.x - origin.x) / std::max(1.f, perFrame)), 0, n - 1);
-    const auto &hf = frames[hoverIdx];
-    ImGui::BeginTooltip();
-    ImGui::Text("entry %d", hoverIdx);
-    ImGui::Text("vsync %lld", (long long)hf.vsyncId);
-    ImGui::Text("ts    %.3fs", hf.tsNs / 1e9);
-    ImGui::Separator();
-    ImGui::Text("txns      %d", hf.txnCount);
-    ImGui::Text("+layers   %d", hf.addedCount);
-    ImGui::Text("-handles  %d", hf.destroyedHandleCount);
-    ImGui::Text("displays  %s", hf.displaysChanged ? "changed" : "-");
-    ImGui::Text("layers    %zu reachable", hf.snapshots.size());
-    ImGui::EndTooltip();
-
+    app.timelineHoverIdx = hoverIdx;
     if (active)
       app.frameIndex = hoverIdx;
+  } else {
+    app.timelineHoverIdx = -1;
   }
 
   // Keyboard shortcuts when timeline window is focused.
