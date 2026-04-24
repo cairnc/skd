@@ -329,6 +329,10 @@ struct AppState {
   bool treeShortNames = true;  // winscope-style name shortening in tree
   bool resetLayoutOnce = true; // first-run default layout
   bool requestResetLayout = false; // View → Reset Layout
+  // Transactions window state.
+  int selectedTransactionIdx = -1; // index into ReplayedTrace::transactions
+  bool autoSyncTimeline = true;    // auto-move frameIndex on txn selection
+  bool scrollTxnTableToSelection = false;
   View3D wireframe3D;
   PreviewView preview;
 };
@@ -842,6 +846,352 @@ void DrawInspector(const layerviewer::CapturedFrame &frame,
 }
 
 // ---------------------------------------------------------------------------
+// Transactions window (big table) + Transaction Inspector (detail table)
+// ---------------------------------------------------------------------------
+
+// Decode a LayerState.what bitmask into a " | "-separated list of the
+// symbolic flag names. Values taken from
+// perfetto/trace/android/surfaceflinger_transactions.proto (LayerState::
+// ChangesLsb + ChangesMsb). Unknown bits are rendered as hex so weird
+// traces still round-trip readably.
+std::string DecodeLayerStateWhat(uint64_t what) {
+  struct Flag {
+    uint64_t bit;
+    const char *name;
+  };
+  static const Flag kFlags[] = {
+      {0x00000001, "ePositionChanged"},
+      {0x00000002, "eLayerChanged"},
+      {0x00000008, "eAlphaChanged"},
+      {0x00000010, "eMatrixChanged"},
+      {0x00000020, "eTransparentRegionChanged"},
+      {0x00000040, "eFlagsChanged"},
+      {0x00000080, "eLayerStackChanged"},
+      {0x00000400, "eReleaseBufferListenerChanged"},
+      {0x00000800, "eShadowRadiusChanged"},
+      {0x00002000, "eBufferCropChanged"},
+      {0x00004000, "eRelativeLayerChanged"},
+      {0x00008000, "eReparent"},
+      {0x00010000, "eColorChanged"},
+      {0x00040000, "eBufferTransformChanged"},
+      {0x00080000, "eTransformToDisplayInverseChanged"},
+      {0x00100000, "eCropChanged"},
+      {0x00200000, "eBufferChanged"},
+      {0x00400000, "eAcquireFenceChanged"},
+      {0x00800000, "eDataspaceChanged"},
+      {0x01000000, "eHdrMetadataChanged"},
+      {0x02000000, "eSurfaceDamageRegionChanged"},
+      {0x04000000, "eApiChanged"},
+      {0x08000000, "eSidebandStreamChanged"},
+      {0x10000000, "eColorTransformChanged"},
+      {0x20000000, "eHasListenerCallbacksChanged"},
+      {0x0000000100000000ull, "eInputInfoChanged"},
+      {0x0000000200000000ull, "eCornerRadiusChanged"},
+      {0x0000000400000000ull, "eFrameChanged"},
+      {0x0000000800000000ull, "eBackgroundColorChanged"},
+      {0x0000001000000000ull, "eMetadataChanged"},
+      {0x0000002000000000ull, "eColorSpaceAgnosticChanged"},
+      {0x0000004000000000ull, "eFrameRateSelectionPriority"},
+      {0x0000008000000000ull, "eFrameRateChanged"},
+      {0x0000010000000000ull, "eBackgroundBlurRadiusChanged"},
+      {0x0000020000000000ull, "eProducerDisconnect"},
+      {0x0000040000000000ull, "eFixedTransformHintChanged"},
+      {0x0000080000000000ull, "eFrameNumberChanged"},
+      {0x0000100000000000ull, "eBlurRegionsChanged"},
+      {0x0000200000000000ull, "eAutoRefreshChanged"},
+      {0x0000400000000000ull, "eStretchChanged"},
+      {0x0000800000000000ull, "eTrustedOverlayChanged"},
+      {0x0001000000000000ull, "eDropInputModeChanged"},
+  };
+  std::string out;
+  uint64_t unknown = what;
+  for (const auto &f : kFlags) {
+    if (what & f.bit) {
+      if (!out.empty())
+        out += " | ";
+      out += f.name;
+      unknown &= ~f.bit;
+    }
+  }
+  if (unknown) {
+    if (!out.empty())
+      out += " | ";
+    out += android::base::StringPrintf("0x%llx", (unsigned long long)unknown);
+  }
+  if (out.empty())
+    out = "(none)";
+  return out;
+}
+
+// Make a docked window's tab the active one in its dock node without
+// moving keyboard focus. Used when a transaction is selected: we want
+// the Transaction Inspector to be visible, but leave arrow-key focus
+// on the Transactions table where the user is navigating.
+void RaiseDockedTab(const char *windowName) {
+  ImGuiWindow *w = ImGui::FindWindowByName(windowName);
+  if (!w || !w->DockNode || !w->DockNode->TabBar)
+    return;
+  w->DockNode->TabBar->NextSelectedTabId = w->TabId;
+}
+
+void DrawTransactions(AppState &app) {
+  if (!app.trace || app.trace->transactions.empty()) {
+    ImGui::TextUnformatted("(no transactions in trace)");
+    return;
+  }
+  const auto &txns = app.trace->transactions;
+  const int n = static_cast<int>(txns.size());
+
+  const bool focused =
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+  // Toolbar: auto-sync toggle + manual sync button (disabled when auto is on,
+  // or when there's no selection to sync to).
+  ImGui::Checkbox("auto sync timeline", &app.autoSyncTimeline);
+  ImGui::SameLine();
+  const bool canManualSync = !app.autoSyncTimeline &&
+                             app.selectedTransactionIdx >= 0 &&
+                             app.selectedTransactionIdx < n;
+  ImGui::BeginDisabled(!canManualSync);
+  if (ImGui::Button("sync timeline to selected")) {
+    app.frameIndex =
+        static_cast<int>(txns[app.selectedTransactionIdx].frameIndex);
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::TextDisabled("%d transactions / %zu frames", n,
+                      app.trace->frames.size());
+
+  ImGuiTableFlags tflags =
+      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+      ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+      ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable |
+      ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit;
+  if (ImGui::BeginTable("txns", 8, tflags)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("#",
+                            ImGuiTableColumnFlags_WidthFixed |
+                                ImGuiTableColumnFlags_DefaultSort,
+                            56.f);
+    ImGui::TableSetupColumn("frame", ImGuiTableColumnFlags_WidthFixed, 64.f);
+    ImGui::TableSetupColumn("post (s)", ImGuiTableColumnFlags_WidthFixed, 90.f);
+    ImGui::TableSetupColumn("pid", ImGuiTableColumnFlags_WidthFixed, 64.f);
+    ImGui::TableSetupColumn("uid", ImGuiTableColumnFlags_WidthFixed, 64.f);
+    ImGui::TableSetupColumn("txn id", ImGuiTableColumnFlags_WidthFixed, 160.f);
+    ImGui::TableSetupColumn("#layers", ImGuiTableColumnFlags_WidthFixed, 64.f);
+    ImGui::TableSetupColumn("#displays", ImGuiTableColumnFlags_WidthFixed,
+                            72.f);
+    ImGui::TableHeadersRow();
+
+    ImGuiListClipper clipper;
+    clipper.Begin(n);
+    while (clipper.Step()) {
+      for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+        const auto &t = txns[i];
+        ImGui::TableNextRow();
+        bool sel = (app.selectedTransactionIdx == i);
+        ImGui::TableSetColumnIndex(0);
+        ImGui::PushID(i);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", i);
+        if (ImGui::Selectable(buf, sel, ImGuiSelectableFlags_SpanAllColumns)) {
+          app.selectedTransactionIdx = i;
+          if (app.autoSyncTimeline)
+            app.frameIndex = static_cast<int>(t.frameIndex);
+          // Raise the Transaction Inspector tab without stealing focus.
+          RaiseDockedTab("Transaction Inspector");
+        }
+        if (sel && app.scrollTxnTableToSelection) {
+          ImGui::SetScrollHereY(0.5f);
+          app.scrollTxnTableToSelection = false;
+        }
+        ImGui::PopID();
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%zu", t.frameIndex);
+        ImGui::TableSetColumnIndex(2);
+        ImGui::Text("%.6f", t.postTimeNs / 1e9);
+        ImGui::TableSetColumnIndex(3);
+        ImGui::Text("%d", t.pid);
+        ImGui::TableSetColumnIndex(4);
+        ImGui::Text("%d", t.uid);
+        ImGui::TableSetColumnIndex(5);
+        ImGui::Text("%llu", (unsigned long long)t.transactionId);
+        ImGui::TableSetColumnIndex(6);
+        ImGui::Text("%d", t.layerChanges);
+        ImGui::TableSetColumnIndex(7);
+        ImGui::Text("%d", t.displayChanges);
+      }
+    }
+    ImGui::EndTable();
+  }
+
+  // Arrow-key navigation when the Transactions window is focused.
+  if (focused && n > 0) {
+    bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+    bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+    if (up || down) {
+      int idx = std::clamp(app.selectedTransactionIdx, 0, n - 1);
+      if (app.selectedTransactionIdx < 0)
+        idx = down ? 0 : n - 1;
+      else
+        idx = std::clamp(idx + (down ? 1 : -1), 0, n - 1);
+      app.selectedTransactionIdx = idx;
+      app.scrollTxnTableToSelection = true;
+      if (app.autoSyncTimeline)
+        app.frameIndex = static_cast<int>(txns[idx].frameIndex);
+      RaiseDockedTab("Transaction Inspector");
+    }
+  }
+}
+
+void DrawTransactionInspector(AppState &app) {
+  if (!app.trace || app.trace->transactions.empty()) {
+    ImGui::TextDisabled("(no transactions in trace)");
+    return;
+  }
+  const auto &txns = app.trace->transactions;
+  const int n = static_cast<int>(txns.size());
+  if (app.selectedTransactionIdx < 0 || app.selectedTransactionIdx >= n) {
+    ImGui::TextDisabled("Select a transaction in the Transactions tab.");
+    return;
+  }
+  const auto &t = txns[app.selectedTransactionIdx];
+  const auto *frame = t.frameIndex < app.trace->frames.size()
+                          ? &app.trace->frames[t.frameIndex]
+                          : nullptr;
+
+  auto section =
+      [](const char *label, bool defaultOpen,
+         std::initializer_list<std::pair<const char *, std::string>> rows) {
+        ImGuiTreeNodeFlags flags =
+            defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0;
+        if (!ImGui::CollapsingHeader(label, flags))
+          return;
+        if (!ImGui::BeginTable(label, 2,
+                               ImGuiTableFlags_SizingStretchProp |
+                                   ImGuiTableFlags_RowBg))
+          return;
+        for (const auto &r : rows) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextUnformatted(r.first);
+          ImGui::TableSetColumnIndex(1);
+          ImGui::TextUnformatted(r.second.c_str());
+        }
+        ImGui::EndTable();
+      };
+
+  ImGui::TextWrapped("Transaction #%d  (id=%llu)", app.selectedTransactionIdx,
+                     (unsigned long long)t.transactionId);
+  ImGui::TextDisabled("frame %zu%s%s", t.frameIndex, frame ? "  vsync=" : "",
+                      frame ? std::to_string(frame->vsyncId).c_str() : "");
+
+  // Layer changes first — most actionable info on a transaction (which
+  // layers and which fields it touched). One row per LayerState in the
+  // TransactionState (not deduped), so repeated touches on the same
+  // layer show their own `what` summary. Table fits its content — no
+  // fixed height, no inner scrollbar.
+  if (ImGui::CollapsingHeader("Layer changes",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (t.layerStateChanges.empty()) {
+      ImGui::TextDisabled("  (none)");
+    } else if (ImGui::BeginTable("layerchanges", 3,
+                                 ImGuiTableFlags_SizingStretchProp |
+                                     ImGuiTableFlags_RowBg)) {
+      ImGui::TableSetupColumn("id", ImGuiTableColumnFlags_WidthFixed, 48.f);
+      ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch,
+                              0.35f);
+      ImGui::TableSetupColumn("changes", ImGuiTableColumnFlags_WidthStretch,
+                              0.65f);
+      ImGui::TableHeadersRow();
+      for (size_t i = 0; i < t.layerStateChanges.size(); i++) {
+        const auto &lc = t.layerStateChanges[i];
+        const auto *snap = frame ? frame->snapshot(lc.layerId) : nullptr;
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(std::to_string(lc.layerId).c_str(),
+                              app.selectedLayerId == lc.layerId,
+                              ImGuiSelectableFlags_SpanAllColumns)) {
+          app.selectedLayerId = lc.layerId;
+          app.scrollTreeToSelection = true;
+        }
+        ImGui::PopID();
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(snap ? snap->name.c_str() : "(not in frame)");
+        ImGui::TableSetColumnIndex(2);
+        ImGui::TextWrapped("%s", DecodeLayerStateWhat(lc.what).c_str());
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  section("Identity", true,
+          {
+              {"index", std::to_string(app.selectedTransactionIdx)},
+              {"transactionId",
+               android::base::StringPrintf(
+                   "%llu (0x%llx)", (unsigned long long)t.transactionId,
+                   (unsigned long long)t.transactionId)},
+              {"frameIndex", std::to_string(t.frameIndex)},
+              {"frame vsyncId",
+               frame ? std::to_string(frame->vsyncId) : std::string("-")},
+              {"frame elapsed-realtime",
+               frame ? android::base::StringPrintf("%.9f s", frame->tsNs / 1e9)
+                     : std::string("-")},
+          });
+
+  section("Source", true,
+          {
+              {"pid", std::to_string(t.pid)},
+              {"uid", std::to_string(t.uid)},
+              {"inputEventId", t.inputEventId ? std::to_string(t.inputEventId)
+                                              : std::string("0 (none)")},
+          });
+
+  section("Timing", true,
+          {
+              {"postTime (ns)", std::to_string(t.postTimeNs)},
+              {"postTime (s)",
+               android::base::StringPrintf("%.9f", t.postTimeNs / 1e9)},
+              {"vsyncId (in txn)", std::to_string(t.vsyncId)},
+              {"vsyncId (frame)",
+               frame ? std::to_string(frame->vsyncId) : std::string("-")},
+              {"matches frame vsync",
+               frame ? (frame->vsyncId == t.vsyncId ? "yes" : "no")
+                     : std::string("-")},
+          });
+
+  section("Contents", true,
+          {
+              {"layer changes", std::to_string(t.layerChanges)},
+              {"display changes", std::to_string(t.displayChanges)},
+              {"affected layers (unique)",
+               std::to_string(t.affectedLayerIds.size())},
+              {"merged transactions",
+               std::to_string(t.mergedTransactionIds.size())},
+          });
+
+  if (!t.mergedTransactionIds.empty() &&
+      ImGui::CollapsingHeader("Merged transaction ids")) {
+    if (ImGui::BeginTable("merged", 1,
+                          ImGuiTableFlags_SizingStretchProp |
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+                          ImVec2(0, 120.f))) {
+      ImGui::TableSetupColumn("id");
+      ImGui::TableHeadersRow();
+      for (uint64_t id : t.mergedTransactionIds) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("%llu (0x%llx)", (unsigned long long)id,
+                    (unsigned long long)id);
+      }
+      ImGui::EndTable();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Timeline (Tracy-style scrubber)
 // ---------------------------------------------------------------------------
 
@@ -1346,10 +1696,14 @@ void BuildDefaultLayout(ImGuiID dockspaceId) {
 
   ImGui::DockBuilderDockWindow("Timeline", bottom);
   ImGui::DockBuilderDockWindow("Layers", left);
-  ImGui::DockBuilderDockWindow("Inspector", right);
+  ImGui::DockBuilderDockWindow("Snapshot Inspector", right);
+  ImGui::DockBuilderDockWindow("Transaction Inspector",
+                               right); // tabbed with Snapshot Inspector
   ImGui::DockBuilderDockWindow("Trace Info", right);
   ImGui::DockBuilderDockWindow("Preview", main);
   ImGui::DockBuilderDockWindow("Wireframe", main); // tabbed with Preview
+  ImGui::DockBuilderDockWindow("Transactions",
+                               main); // tabbed with Preview/Wireframe
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -1571,13 +1925,18 @@ int main(int argc, char **argv) {
     if ((io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_O, false))
       OpenFileDialog(window, app);
 
-    // Inspector before Trace Info so it wins the default-active-tab for the
-    // "right" dock node (tab order follows Begin-call order within the same
-    // docked node, not DockBuilderDockWindow order).
-    if (ImGui::Begin("Inspector")) {
+    // Snapshot Inspector before Trace Info and Transaction Inspector so it
+    // wins the default-active-tab for the "right" dock node (tab order
+    // follows Begin-call order within the same docked node, not
+    // DockBuilderDockWindow order).
+    if (ImGui::Begin("Snapshot Inspector")) {
       if (app.trace && !app.trace->frames.empty())
         DrawInspector(app.trace->frames[app.frameIndex], app);
     }
+    ImGui::End();
+
+    if (ImGui::Begin("Transaction Inspector"))
+      DrawTransactionInspector(app);
     ImGui::End();
 
     if (ImGui::Begin("Trace Info")) {
@@ -1615,6 +1974,10 @@ int main(int argc, char **argv) {
 
     if (ImGui::Begin("Timeline"))
       DrawTimeline(app);
+    ImGui::End();
+
+    if (ImGui::Begin("Transactions"))
+      DrawTransactions(app);
     ImGui::End();
 
     if (ImGui::Begin("Preview")) {

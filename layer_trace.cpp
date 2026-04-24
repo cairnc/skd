@@ -9,6 +9,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <unordered_set>
 
 #include <perfetto/trace/trace.pb.h>
 
@@ -277,6 +278,44 @@ std::unique_ptr<ReplayedTrace> LoadAndReplay(const std::string &path) {
     }
     captureFrame(frame, snapshotBuilder, lifecycleManager);
     out->frames.push_back(std::move(frame));
+
+    // Snapshot per-transaction summary for the Transactions window. Read
+    // directly from the proto (not from the parsed TransactionState) so we
+    // capture fields the proto parser discards (post_time, transaction_id,
+    // merged ids) without re-plumbing the parser.
+    const size_t frameIndex = out->frames.size() - 1;
+    const size_t txnBegin = out->transactions.size();
+    for (int j = 0; j < entry.transactions_size(); j++) {
+      const auto &tp = entry.transactions(j);
+      CapturedTransaction ct;
+      ct.frameIndex = frameIndex;
+      ct.pid = tp.pid();
+      ct.uid = tp.uid();
+      ct.inputEventId = tp.input_event_id();
+      ct.vsyncId = tp.vsync_id();
+      ct.postTimeNs = tp.post_time();
+      ct.transactionId = tp.transaction_id();
+      ct.layerChanges = tp.layer_changes_size();
+      ct.displayChanges = tp.display_changes_size();
+      ct.affectedLayerIds.reserve(tp.layer_changes_size());
+      ct.layerStateChanges.reserve(tp.layer_changes_size());
+      std::unordered_set<uint32_t> seen;
+      for (int k = 0; k < tp.layer_changes_size(); k++) {
+        const auto &lc = tp.layer_changes(k);
+        CapturedLayerChange clc;
+        clc.layerId = lc.layer_id();
+        clc.what = lc.what();
+        ct.layerStateChanges.push_back(clc);
+        if (seen.insert(lc.layer_id()).second)
+          ct.affectedLayerIds.push_back(lc.layer_id());
+      }
+      ct.mergedTransactionIds.reserve(tp.merged_transaction_ids_size());
+      for (int k = 0; k < tp.merged_transaction_ids_size(); k++)
+        ct.mergedTransactionIds.push_back(tp.merged_transaction_ids(k));
+      out->transactions.push_back(std::move(ct));
+    }
+    out->transactionRangeByFrame.emplace_back(txnBegin,
+                                              out->transactions.size());
 
     lifecycleManager.commitChanges();
   }

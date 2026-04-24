@@ -64,10 +64,49 @@ struct CapturedFrame {
   }
 };
 
+// Per-transaction summary for the Transactions window. One per
+// TransactionState in the original .pftrace; `frameIndex` points back to
+// the CapturedFrame whose entry contained this transaction, so the UI
+// can sync the timeline to the frame when a transaction is selected.
+struct CapturedLayerChange {
+  uint32_t layerId = 0;
+  // `what` bitmask from LayerState — which fields were touched. The UI
+  // decodes this into flag names (ePositionChanged, eBufferChanged, …).
+  // Proto only uses lsb for now; keep 64-bit in case msb bits appear.
+  uint64_t what = 0;
+};
+
+struct CapturedTransaction {
+  size_t frameIndex = 0;    // index into ReplayedTrace::frames
+  int32_t pid = 0;          // source process
+  int32_t uid = 0;          // source app uid
+  int32_t inputEventId = 0; // may be 0 if this txn isn't input-driven
+  int64_t vsyncId = 0;      // TransactionState.vsync_id
+  int64_t postTimeNs = 0;   // when the client posted the txn
+  uint64_t transactionId = 0;
+  int layerChanges = 0;
+  int displayChanges = 0;
+  // Per-layer changes in the order the transaction listed them. Same
+  // layer id can appear multiple times if the transaction touched it
+  // more than once (repeated LayerState entries in one TransactionState).
+  std::vector<CapturedLayerChange> layerStateChanges;
+  // Deduplicated list of affected layer ids in first-seen order — used
+  // by the Affected-Layers mini-table. Each id points into
+  // `layerStateChanges` for its per-field bitmask summary.
+  std::vector<uint32_t> affectedLayerIds;
+  // Merged-into ids (another transaction's id merged into this one).
+  std::vector<uint64_t> mergedTransactionIds;
+};
+
 struct ReplayedTrace {
   std::string path;
   std::string error;
   std::vector<CapturedFrame> frames;
+  std::vector<CapturedTransaction> transactions;
+  // transactionRangeByFrame[i] = [first, last) indices into `transactions`
+  // for frame i. Lets the Transactions window filter to the current frame
+  // and vice versa.
+  std::vector<std::pair<size_t, size_t>> transactionRangeByFrame;
   int packetCount = 0;
   int layerSnapshotPacketCount = 0;
 };
