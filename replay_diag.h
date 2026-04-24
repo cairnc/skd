@@ -25,6 +25,14 @@
 
 namespace layerviewer::diag {
 
+// Relative-epsilon float compare used by the per-layer diff below. Floats
+// stored in the two proto sources (our CapturedFrame vs SF's own
+// LayersSnapshotProto) can differ by a ULP after reserialization; 0.01 is
+// well below any real geometry delta.
+inline bool NearlyEq(float a, float b, float eps = 0.01f) {
+  return std::fabs(a - b) <= eps;
+}
+
 struct DiffStats {
   int both = 0;
   int diffFields = 0;
@@ -130,9 +138,6 @@ inline DiffStats diffSnapshotsAgainstSf(
       dumpLayerDiagnostics(id, hierarchy, lifecycle);
   }
 
-  auto near = [](float a, float b, float eps = 0.01f) {
-    return std::fabs(a - b) <= eps;
-  };
   int reported = 0;
   for (const auto &[id, ours] : oursById) {
     auto it = sfById.find(id);
@@ -149,10 +154,10 @@ inline DiffStats diffSnapshotsAgainstSf(
           sf.layer_stack());
     if (sf.has_bounds()) {
       const auto &b = sf.bounds();
-      if (!(near(ours->geomLayerBounds.left, b.left()) &&
-            near(ours->geomLayerBounds.top, b.top()) &&
-            near(ours->geomLayerBounds.right, b.right()) &&
-            near(ours->geomLayerBounds.bottom, b.bottom()))) {
+      if (!(NearlyEq(ours->geomLayerBounds.left, b.left()) &&
+            NearlyEq(ours->geomLayerBounds.top, b.top()) &&
+            NearlyEq(ours->geomLayerBounds.right, b.right()) &&
+            NearlyEq(ours->geomLayerBounds.bottom, b.bottom()))) {
         mismatches += android::base::StringPrintf(
             " bounds{(%g,%g,%g,%g) vs (%g,%g,%g,%g)}",
             ours->geomLayerBounds.left, ours->geomLayerBounds.top,

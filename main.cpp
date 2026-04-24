@@ -409,13 +409,16 @@ ImVec2 Project3D(const Rotation3D &R, float x, float y, float z, float screenCx,
   return ImVec2(screenCx + rx * scale, screenCy + ry * scale);
 }
 
+// Cross-product z of (q - p) x (r - p). Positive / negative tells which side
+// of the segment pq the point r is on.
+float Cross2(ImVec2 p, ImVec2 q, ImVec2 r) {
+  return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+}
+
 // Point-in-convex-quad via cross-product signs. Works for any winding order.
 bool PointInQuad(ImVec2 m, ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 d) {
-  auto cross = [](ImVec2 p, ImVec2 q, ImVec2 r) {
-    return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-  };
-  float s1 = cross(a, b, m), s2 = cross(b, c, m);
-  float s3 = cross(c, d, m), s4 = cross(d, a, m);
+  float s1 = Cross2(a, b, m), s2 = Cross2(b, c, m);
+  float s3 = Cross2(c, d, m), s4 = Cross2(d, a, m);
   return (s1 >= 0 && s2 >= 0 && s3 >= 0 && s4 >= 0) ||
          (s1 <= 0 && s2 <= 0 && s3 <= 0 && s4 <= 0);
 }
@@ -664,6 +667,65 @@ void DrawLayerTreePane(const layerviewer::CapturedFrame &frame, AppState &app) {
 // Inspector
 // ---------------------------------------------------------------------------
 
+// Key/value section used by both inspectors. Lays out a CollapsingHeader
+// containing a 2-column table where each row is (key, value).
+using KvRow = std::pair<const char *, std::string>;
+using KvRows = std::initializer_list<KvRow>;
+void RenderKvSection(const char *label, bool defaultOpen, KvRows rows) {
+  ImGuiTreeNodeFlags flags = defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0;
+  if (!ImGui::CollapsingHeader(label, flags))
+    return;
+  ImGuiTableFlags tflags =
+      ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg;
+  if (!ImGui::BeginTable(label, 2, tflags))
+    return;
+  for (const KvRow &r : rows) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted(r.first);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted(r.second.c_str());
+  }
+  ImGui::EndTable();
+}
+
+// Small string formatters shared by the Snapshot Inspector.
+std::string Yn(bool b) { return b ? "yes" : "no"; }
+
+std::string RectStr(const android::Rect &r) {
+  return android::base::StringPrintf("(%d, %d) -> (%d, %d)  [%dx%d]", r.left,
+                                     r.top, r.right, r.bottom, r.width(),
+                                     r.height());
+}
+
+std::string FloatRectStr(const android::FloatRect &r) {
+  return android::base::StringPrintf(
+      "(%.1f, %.1f) -> (%.1f, %.1f)  [%.1fx%.1f]", r.left, r.top, r.right,
+      r.bottom, r.right - r.left, r.bottom - r.top);
+}
+
+std::string XformStr(const android::ui::Transform &t) {
+  return android::base::StringPrintf("dsdx=%.3f dtdx=%.3f tx=%.1f\n"
+                                     "dtdy=%.3f dsdy=%.3f ty=%.1f",
+                                     t.dsdx(), t.dtdx(), t.tx(), t.dtdy(),
+                                     t.dsdy(), t.ty());
+}
+
+using Reachability =
+    android::surfaceflinger::frontend::LayerSnapshot::Reachablilty;
+
+std::string ReachStr(Reachability r) {
+  switch (r) {
+  case Reachability::Reachable:
+    return "reachable";
+  case Reachability::Unreachable:
+    return "unreachable";
+  case Reachability::ReachableByRelativeParent:
+    return "via relative parent";
+  }
+  return "?";
+}
+
 void DrawInspector(const layerviewer::CapturedFrame &frame,
                    const AppState &app) {
   if (app.selectedLayerId == kUnassignedLayerId) {
@@ -680,120 +742,71 @@ void DrawInspector(const layerviewer::CapturedFrame &frame,
   uint32_t parentId =
       parentIt != frame.parentByLayerId.end() ? parentIt->second : UINT32_MAX;
 
-  // Helpers: a collapsible section containing a two-column key/value table.
-  auto section =
-      [](const char *label, bool defaultOpen,
-         std::initializer_list<std::pair<const char *, std::string>> rows) {
-        ImGuiTreeNodeFlags flags =
-            defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0;
-        if (!ImGui::CollapsingHeader(label, flags))
-          return;
-        if (!ImGui::BeginTable(label, 2,
-                               ImGuiTableFlags_SizingStretchProp |
-                                   ImGuiTableFlags_RowBg))
-          return;
-        for (const auto &r : rows) {
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0);
-          ImGui::TextUnformatted(r.first);
-          ImGui::TableSetColumnIndex(1);
-          ImGui::TextUnformatted(r.second.c_str());
-        }
-        ImGui::EndTable();
-      };
-  auto yn = [](bool b) -> std::string { return b ? "yes" : "no"; };
-  auto rectStr = [](const android::Rect &r) -> std::string {
-    return android::base::StringPrintf("(%d, %d) -> (%d, %d)  [%dx%d]", r.left,
-                                       r.top, r.right, r.bottom, r.width(),
-                                       r.height());
-  };
-  auto floatRectStr = [](const android::FloatRect &r) -> std::string {
-    return android::base::StringPrintf(
-        "(%.1f, %.1f) -> (%.1f, %.1f)  [%.1fx%.1f]", r.left, r.top, r.right,
-        r.bottom, r.right - r.left, r.bottom - r.top);
-  };
-  auto xformStr = [](const android::ui::Transform &t) -> std::string {
-    return android::base::StringPrintf("dsdx=%.3f dtdx=%.3f tx=%.1f\n"
-                                       "dtdy=%.3f dsdy=%.3f ty=%.1f",
-                                       t.dsdx(), t.dtdx(), t.tx(), t.dtdy(),
-                                       t.dsdy(), t.ty());
-  };
-  auto reachStr = [](decltype(snap->reachablilty) r) -> std::string {
-    using R = decltype(snap->reachablilty);
-    switch (r) {
-    case R::Reachable:
-      return "reachable";
-    case R::Unreachable:
-      return "unreachable";
-    case R::ReachableByRelativeParent:
-      return "via relative parent";
-    }
-    return "?";
-  };
-
   ImGui::TextWrapped("%s", snap->name.c_str());
   ImGui::TextDisabled("#%u  globalZ=%zu  sequence=%d  unique=%u",
                       app.selectedLayerId, snap->globalZ, snap->sequence,
                       snap->uniqueSequence);
 
-  section("Identity", true,
-          {
-              {"id", std::to_string(app.selectedLayerId)},
-              {"parent", parentId == UINT32_MAX ? std::string("-")
-                                                : std::to_string(parentId)},
-              {"sequence", std::to_string(snap->sequence)},
-              {"uniqueSequence", std::to_string(snap->uniqueSequence)},
-              {"globalZ", std::to_string(snap->globalZ)},
-              {"layerStack", std::to_string(snap->outputFilter.layerStack.id)},
-              {"uid", std::to_string(snap->uid.val())},
-              {"pid", std::to_string(snap->pid.val())},
-              {"debugName", snap->debugName},
-          });
+  RenderKvSection(
+      "Identity", true,
+      {
+          {"id", std::to_string(app.selectedLayerId)},
+          {"parent", parentId == UINT32_MAX ? std::string("-")
+                                            : std::to_string(parentId)},
+          {"sequence", std::to_string(snap->sequence)},
+          {"uniqueSequence", std::to_string(snap->uniqueSequence)},
+          {"globalZ", std::to_string(snap->globalZ)},
+          {"layerStack", std::to_string(snap->outputFilter.layerStack.id)},
+          {"uid", std::to_string(snap->uid.val())},
+          {"pid", std::to_string(snap->pid.val())},
+          {"debugName", snap->debugName},
+      });
 
-  section(
+  RenderKvSection(
       "Visibility", true,
       {
-          {"isVisible", yn(snap->isVisible)},
-          {"reachablilty", reachStr(snap->reachablilty)},
-          {"hiddenByPolicyFromParent", yn(snap->isHiddenByPolicyFromParent)},
+          {"isVisible", Yn(snap->isVisible)},
+          {"reachablilty", ReachStr(snap->reachablilty)},
+          {"hiddenByPolicyFromParent", Yn(snap->isHiddenByPolicyFromParent)},
           {"hiddenByPolicyFromRelativeParent",
-           yn(snap->isHiddenByPolicyFromRelativeParent)},
-          {"contentDirty", yn(snap->contentDirty)},
-          {"hasReadyFrame", yn(snap->hasReadyFrame)},
-          {"isOpaque", yn(snap->isOpaque)},
-          {"contentOpaque", yn(snap->contentOpaque)},
-          {"layerOpaqueFlagSet", yn(snap->layerOpaqueFlagSet)},
-          {"isSecure", yn(snap->isSecure)},
-          {"forceClientComposition", yn(snap->forceClientComposition)},
-          {"isSmallDirty", yn(snap->isSmallDirty)},
+           Yn(snap->isHiddenByPolicyFromRelativeParent)},
+          {"contentDirty", Yn(snap->contentDirty)},
+          {"hasReadyFrame", Yn(snap->hasReadyFrame)},
+          {"isOpaque", Yn(snap->isOpaque)},
+          {"contentOpaque", Yn(snap->contentOpaque)},
+          {"layerOpaqueFlagSet", Yn(snap->layerOpaqueFlagSet)},
+          {"isSecure", Yn(snap->isSecure)},
+          {"forceClientComposition", Yn(snap->forceClientComposition)},
+          {"isSmallDirty", Yn(snap->isSmallDirty)},
           {"reason", snap->getIsVisibleReason()},
       });
 
-  section("Geometry", true,
-          {
-              {"transformedBounds", floatRectStr(snap->transformedBounds)},
-              {"geomLayerBounds", floatRectStr(snap->geomLayerBounds)},
-              {"geomLayerCrop", floatRectStr(snap->geomLayerCrop)},
-              {"geomCrop", floatRectStr(snap->geomCrop)},
-              {"geomContentCrop", rectStr(snap->geomContentCrop)},
-              {"bufferSize", rectStr(snap->bufferSize)},
-              {"croppedBufferSize", floatRectStr(snap->croppedBufferSize)},
-              {"geomBufferSize", rectStr(snap->geomBufferSize)},
-              {"cursorFrame", rectStr(snap->cursorFrame)},
-              {"geomLayerTransform", xformStr(snap->geomLayerTransform)},
-              {"localTransform", xformStr(snap->localTransform)},
-              {"parentTransform", xformStr(snap->parentTransform)},
-              {"geomBufferTransform",
-               android::base::StringPrintf("0x%x", snap->geomBufferTransform)},
-              {"bufferTransform",
-               android::base::StringPrintf("0x%x", snap->geomBufferTransform)},
-              {"invalidTransform", yn(snap->invalidTransform)},
-              {"geomUsesSourceCrop", yn(snap->geomUsesSourceCrop)},
-              {"geomBufferUsesDisplayInverseTransform",
-               yn(snap->geomBufferUsesDisplayInverseTransform)},
-          });
+  RenderKvSection(
+      "Geometry", true,
+      {
+          {"transformedBounds", FloatRectStr(snap->transformedBounds)},
+          {"geomLayerBounds", FloatRectStr(snap->geomLayerBounds)},
+          {"geomLayerCrop", FloatRectStr(snap->geomLayerCrop)},
+          {"geomCrop", FloatRectStr(snap->geomCrop)},
+          {"geomContentCrop", RectStr(snap->geomContentCrop)},
+          {"bufferSize", RectStr(snap->bufferSize)},
+          {"croppedBufferSize", FloatRectStr(snap->croppedBufferSize)},
+          {"geomBufferSize", RectStr(snap->geomBufferSize)},
+          {"cursorFrame", RectStr(snap->cursorFrame)},
+          {"geomLayerTransform", XformStr(snap->geomLayerTransform)},
+          {"localTransform", XformStr(snap->localTransform)},
+          {"parentTransform", XformStr(snap->parentTransform)},
+          {"geomBufferTransform",
+           android::base::StringPrintf("0x%x", snap->geomBufferTransform)},
+          {"bufferTransform",
+           android::base::StringPrintf("0x%x", snap->geomBufferTransform)},
+          {"invalidTransform", Yn(snap->invalidTransform)},
+          {"geomUsesSourceCrop", Yn(snap->geomUsesSourceCrop)},
+          {"geomBufferUsesDisplayInverseTransform",
+           Yn(snap->geomBufferUsesDisplayInverseTransform)},
+      });
 
-  section(
+  RenderKvSection(
       "Color / Blending", true,
       {
           {"color",
@@ -806,43 +819,44 @@ void DrawInspector(const layerviewer::CapturedFrame &frame,
                         "%.2f", static_cast<float>(snap->alpha))},
           {"dataspace", android::base::StringPrintf(
                             "0x%x", static_cast<uint32_t>(snap->dataspace))},
-          {"dimmingEnabled", yn(snap->dimmingEnabled)},
-          {"colorTransformIsIdentity", yn(snap->colorTransformIsIdentity)},
-          {"premultipliedAlpha", yn(snap->premultipliedAlpha)},
+          {"dimmingEnabled", Yn(snap->dimmingEnabled)},
+          {"colorTransformIsIdentity", Yn(snap->colorTransformIsIdentity)},
+          {"premultipliedAlpha", Yn(snap->premultipliedAlpha)},
           {"cornerRadius", android::base::StringPrintf(
                                "x=%.2f y=%.2f", snap->roundedCorner.radius.x,
                                snap->roundedCorner.radius.y)},
-          {"cornerCrop", floatRectStr(snap->roundedCorner.cropRect)},
+          {"cornerCrop", FloatRectStr(snap->roundedCorner.cropRect)},
           {"backgroundBlurRadius", std::to_string(snap->backgroundBlurRadius)},
           {"blurRegions", std::to_string(snap->blurRegions.size())},
       });
 
   if (snap->externalTexture) {
-    section("Buffer", true,
-            {
-                {"id", std::to_string(snap->externalTexture->getId())},
-                {"size", android::base::StringPrintf(
-                             "%ux%u", snap->externalTexture->getWidth(),
-                             snap->externalTexture->getHeight())},
-                {"pixelFormat",
-                 std::to_string(snap->externalTexture->getPixelFormat())},
-                {"usage",
-                 android::base::StringPrintf(
-                     "0x%llx",
-                     (unsigned long long)snap->externalTexture->getUsage())},
-                {"frameNumber", std::to_string(snap->frameNumber)},
-                {"hasProtectedContent", yn(snap->hasProtectedContent)},
-            });
+    RenderKvSection(
+        "Buffer", true,
+        {
+            {"id", std::to_string(snap->externalTexture->getId())},
+            {"size", android::base::StringPrintf(
+                         "%ux%u", snap->externalTexture->getWidth(),
+                         snap->externalTexture->getHeight())},
+            {"pixelFormat",
+             std::to_string(snap->externalTexture->getPixelFormat())},
+            {"usage",
+             android::base::StringPrintf(
+                 "0x%llx",
+                 (unsigned long long)snap->externalTexture->getUsage())},
+            {"frameNumber", std::to_string(snap->frameNumber)},
+            {"hasProtectedContent", Yn(snap->hasProtectedContent)},
+        });
   }
 
-  section(
+  RenderKvSection(
       "Input", false,
       {
-          {"hasInputInfo", yn(snap->hasInputInfo())},
-          {"canReceiveInput", yn(snap->canReceiveInput())},
+          {"hasInputInfo", Yn(snap->hasInputInfo())},
+          {"canReceiveInput", Yn(snap->canReceiveInput())},
           {"touchableRegion bounds",
-           rectStr(snap->inputInfo.touchableRegion.getBounds())},
-          {"frame", rectStr(snap->inputInfo.frame)},
+           RectStr(snap->inputInfo.touchableRegion.getBounds())},
+          {"frame", RectStr(snap->inputInfo.frame)},
           {"globalScaleFactor", android::base::StringPrintf(
                                     "%.3f", snap->inputInfo.globalScaleFactor)},
           {"surfaceInset", std::to_string(snap->inputInfo.surfaceInset)},
@@ -1006,9 +1020,9 @@ void DrawTransactions(AppState &app) {
       bool sel = (app.selectedTransactionIdx == i);
       ImGui::TableSetColumnIndex(0);
       ImGui::PushID(i);
-      char buf[32];
-      std::snprintf(buf, sizeof(buf), "%d", i);
-      if (ImGui::Selectable(buf, sel, ImGuiSelectableFlags_SpanAllColumns)) {
+      std::string idLabel = std::to_string(i);
+      if (ImGui::Selectable(idLabel.c_str(), sel,
+                            ImGuiSelectableFlags_SpanAllColumns)) {
         app.selectedTransactionIdx = i;
         if (app.autoSyncTimeline)
           app.frameIndex = static_cast<int>(t.frameIndex);
@@ -1093,27 +1107,6 @@ void DrawTransactionInspector(AppState &app) {
                           ? &app.trace->frames[t.frameIndex]
                           : nullptr;
 
-  auto section =
-      [](const char *label, bool defaultOpen,
-         std::initializer_list<std::pair<const char *, std::string>> rows) {
-        ImGuiTreeNodeFlags flags =
-            defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0;
-        if (!ImGui::CollapsingHeader(label, flags))
-          return;
-        if (!ImGui::BeginTable(label, 2,
-                               ImGuiTableFlags_SizingStretchProp |
-                                   ImGuiTableFlags_RowBg))
-          return;
-        for (const auto &r : rows) {
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0);
-          ImGui::TextUnformatted(r.first);
-          ImGui::TableSetColumnIndex(1);
-          ImGui::TextUnformatted(r.second.c_str());
-        }
-        ImGui::EndTable();
-      };
-
   ImGui::TextWrapped("Transaction #%d  (id=%llu)", app.selectedTransactionIdx,
                      (unsigned long long)t.transactionId);
   ImGui::TextDisabled("frame %zu%s%s", t.frameIndex, frame ? "  vsync=" : "",
@@ -1159,20 +1152,21 @@ void DrawTransactionInspector(AppState &app) {
     }
   }
 
-  section("Identity", true,
-          {
-              {"index", std::to_string(app.selectedTransactionIdx)},
-              {"transactionId",
-               android::base::StringPrintf(
-                   "%llu (0x%llx)", (unsigned long long)t.transactionId,
-                   (unsigned long long)t.transactionId)},
-              {"frameIndex", std::to_string(t.frameIndex)},
-              {"frame vsyncId",
-               frame ? std::to_string(frame->vsyncId) : std::string("-")},
-              {"frame elapsed-realtime",
-               frame ? android::base::StringPrintf("%.9f s", frame->tsNs / 1e9)
-                     : std::string("-")},
-          });
+  RenderKvSection(
+      "Identity", true,
+      {
+          {"index", std::to_string(app.selectedTransactionIdx)},
+          {"transactionId",
+           android::base::StringPrintf("%llu (0x%llx)",
+                                       (unsigned long long)t.transactionId,
+                                       (unsigned long long)t.transactionId)},
+          {"frameIndex", std::to_string(t.frameIndex)},
+          {"frame vsyncId",
+           frame ? std::to_string(frame->vsyncId) : std::string("-")},
+          {"frame elapsed-realtime",
+           frame ? android::base::StringPrintf("%.9f s", frame->tsNs / 1e9)
+                 : std::string("-")},
+      });
 
   std::string processName;
   {
@@ -1182,37 +1176,38 @@ void DrawTransactionInspector(AppState &app) {
     else
       processName = "(unknown — no ProcessTree in trace)";
   }
-  section("Source", true,
-          {
-              {"pid", std::to_string(t.pid)},
-              {"process", processName},
-              {"uid", std::to_string(t.uid)},
-              {"inputEventId", t.inputEventId ? std::to_string(t.inputEventId)
-                                              : std::string("0 (none)")},
-          });
+  RenderKvSection(
+      "Source", true,
+      {
+          {"pid", std::to_string(t.pid)},
+          {"process", processName},
+          {"uid", std::to_string(t.uid)},
+          {"inputEventId", t.inputEventId ? std::to_string(t.inputEventId)
+                                          : std::string("0 (none)")},
+      });
 
-  section("Timing", true,
-          {
-              {"postTime (ns)", std::to_string(t.postTimeNs)},
-              {"postTime (s)",
-               android::base::StringPrintf("%.9f", t.postTimeNs / 1e9)},
-              {"vsyncId (in txn)", std::to_string(t.vsyncId)},
-              {"vsyncId (frame)",
-               frame ? std::to_string(frame->vsyncId) : std::string("-")},
-              {"matches frame vsync",
-               frame ? (frame->vsyncId == t.vsyncId ? "yes" : "no")
-                     : std::string("-")},
-          });
+  RenderKvSection("Timing", true,
+                  {
+                      {"postTime (ns)", std::to_string(t.postTimeNs)},
+                      {"postTime (s)",
+                       android::base::StringPrintf("%.9f", t.postTimeNs / 1e9)},
+                      {"vsyncId (in txn)", std::to_string(t.vsyncId)},
+                      {"vsyncId (frame)", frame ? std::to_string(frame->vsyncId)
+                                                : std::string("-")},
+                      {"matches frame vsync",
+                       frame ? (frame->vsyncId == t.vsyncId ? "yes" : "no")
+                             : std::string("-")},
+                  });
 
-  section("Contents", true,
-          {
-              {"layer changes", std::to_string(t.layerChanges)},
-              {"display changes", std::to_string(t.displayChanges)},
-              {"affected layers (unique)",
-               std::to_string(t.affectedLayerIds.size())},
-              {"merged transactions",
-               std::to_string(t.mergedTransactionIds.size())},
-          });
+  RenderKvSection("Contents", true,
+                  {
+                      {"layer changes", std::to_string(t.layerChanges)},
+                      {"display changes", std::to_string(t.displayChanges)},
+                      {"affected layers (unique)",
+                       std::to_string(t.affectedLayerIds.size())},
+                      {"merged transactions",
+                       std::to_string(t.mergedTransactionIds.size())},
+                  });
 
   if (!t.mergedTransactionIds.empty() &&
       ImGui::CollapsingHeader("Merged transaction ids")) {
@@ -1293,14 +1288,72 @@ std::string FormatNs(double ns, int64_t stepNs = 1) {
   }
   double v = ns / u->scale;
   double stepInUnit = double(stepNs) / u->scale;
-  int decimals = 0;
-  if (stepInUnit < 1.0)
-    decimals = 1;
-  if (stepInUnit < 0.1)
-    decimals = 2;
-  char fmt[32];
-  std::snprintf(fmt, sizeof(fmt), "%%.%df%s", decimals, u->suffix);
-  return android::base::StringPrintf(fmt, v);
+  // Match label precision to the step so "1s"/"250ms"/"12.5ms" drop
+  // trailing zeros based on what the step actually carries.
+  if (stepInUnit >= 1.0)
+    return android::base::StringPrintf("%.0f%s", v, u->suffix);
+  if (stepInUnit >= 0.1)
+    return android::base::StringPrintf("%.1f%s", v, u->suffix);
+  return android::base::StringPrintf("%.2f%s", v, u->suffix);
+}
+
+// Consistent per-pid color so each process's track stays recognisable.
+ImU32 PidTrackColor(int pid) {
+  uint32_t h = uint32_t(pid) * 2654435761u;
+  uint8_t r = 70 + ((h >> 0) & 0xff) / 2;
+  uint8_t g = 70 + ((h >> 8) & 0xff) / 2;
+  uint8_t b = 80 + ((h >> 16) & 0xff) / 2;
+  return IM_COL32(r, g, b, 255);
+}
+
+// Pan/zoom state for one row of the timeline. Threaded through slice-drawing
+// as a struct so we don't need capture-heavy lambdas.
+struct TimelineRow {
+  ImDrawList *dl;
+  ImVec2 cellTL;
+  float cellW;
+  float rowH;
+  float scrollX;
+  float virtW;
+  int64_t t0Ns;
+  int64_t totalNs;
+  bool rowHovered;
+  ImVec2 mouse;
+};
+
+// Draw one slice on a timeline row. Returns true if the mouse is over it
+// (caller uses this to flag the nearest transaction/frame as hovered).
+bool DrawTimelineSlice(const TimelineRow &r, int64_t ns, ImU32 col,
+                       const std::string &name, bool isCurrent) {
+  float x =
+      r.cellTL.x - r.scrollX +
+      static_cast<float>(double(ns - r.t0Ns) / double(r.totalNs) * r.virtW);
+  float w = std::max(2.f, static_cast<float>(r.virtW / r.totalNs));
+  float sx0 = x - w * 0.5f;
+  float sx1 = x + w * 0.5f;
+  if (sx1 < r.cellTL.x || sx0 > r.cellTL.x + r.cellW)
+    return false;
+  r.dl->AddRectFilled(ImVec2(sx0, r.cellTL.y + 2),
+                      ImVec2(sx1, r.cellTL.y + r.rowH - 2), col);
+  if (isCurrent)
+    r.dl->AddRect(ImVec2(sx0 - 1, r.cellTL.y + 1),
+                  ImVec2(sx1 + 1, r.cellTL.y + r.rowH - 1),
+                  IM_COL32(255, 200, 60, 255), 0.f, 0, 2.f);
+  if (sx1 - sx0 > 20 && !name.empty())
+    r.dl->AddText(ImVec2(sx0 + 3, r.cellTL.y + 3), IM_COL32(240, 240, 250, 255),
+                  name.c_str());
+  return r.rowHovered && r.mouse.x >= sx0 && r.mouse.x <= sx1;
+}
+
+// Cursor-anchored zoom: keep the virtual-x under `anchorPx` fixed so the
+// content under the mouse doesn't slide while zooming.
+void ZoomTimeline(float newZoom, float anchorPx, float &zoom, float &scrollX) {
+  float old = zoom;
+  if (newZoom == old)
+    return;
+  float virtAtAnchor = anchorPx + scrollX;
+  zoom = newZoom;
+  scrollX = virtAtAnchor * (newZoom / old) - anchorPx;
 }
 
 void DrawTimeline(AppState &app) {
@@ -1374,15 +1427,6 @@ void DrawTimeline(AppState &app) {
   const int64_t t0Ns = frames.front().tsNs;
   const int64_t t1Ns = frames.back().tsNs;
   const int64_t totalNs = std::max<int64_t>(1, t1Ns - t0Ns);
-
-  // Consistent per-pid color so each process's track stays recognisable.
-  auto pidColor = [](int pid) -> ImU32 {
-    uint32_t h = uint32_t(pid) * 2654435761u;
-    uint8_t r = 70 + ((h >> 0) & 0xff) / 2;
-    uint8_t g = 70 + ((h >> 8) & 0xff) / 2;
-    uint8_t b = 80 + ((h >> 16) & 0xff) / 2;
-    return IM_COL32(r, g, b, 255);
-  };
 
   // Hover state collected from all timeline cells this frame.
   int hoverFrameIdx = -1;
@@ -1522,52 +1566,34 @@ void DrawTimeline(AppState &app) {
     dl->PushClipRect(cellTL, ImVec2(cellTL.x + timelineCellW, cellTL.y + kRowH),
                      true);
 
-    auto drawSlice = [&](int64_t ns, ImU32 col, const std::string &name,
-                         bool isCurrent) {
-      float x = cellTL.x - scrollX +
-                float(double(ns - t0Ns) / double(totalNs) * virtW);
-      float w = std::max(2.f, float(virtW / totalNs));
-      float sx0 = x - w * 0.5f;
-      float sx1 = x + w * 0.5f;
-      if (sx1 < cellTL.x || sx0 > cellTL.x + timelineCellW)
-        return false;
-      dl->AddRectFilled(ImVec2(sx0, cellTL.y + 2),
-                        ImVec2(sx1, cellTL.y + kRowH - 2), col);
-      if (isCurrent)
-        dl->AddRect(ImVec2(sx0 - 1, cellTL.y + 1),
-                    ImVec2(sx1 + 1, cellTL.y + kRowH - 1),
-                    IM_COL32(255, 200, 60, 255), 0.f, 0, 2.f);
-      if (sx1 - sx0 > 20 && !name.empty())
-        dl->AddText(ImVec2(sx0 + 3, cellTL.y + 3), IM_COL32(240, 240, 250, 255),
-                    name.c_str());
-      return rowHovered && mouse.x >= sx0 && mouse.x <= sx1;
-    };
+    TimelineRow row{dl,    cellTL, timelineCellW, kRowH,      scrollX,
+                    virtW, t0Ns,   totalNs,       rowHovered, mouse};
 
     if (tr.pid == -1) {
       for (int i = 0; i < n; i++) {
-        const auto &f = frames[i];
+        const layerviewer::CapturedFrame &f = frames[i];
         int busy = std::min(255, 60 + f.txnCount * 18);
         ImU32 col = IM_COL32(40, busy, 90, 255);
         std::string label =
             android::base::StringPrintf("#%d (%d)", i, f.txnCount);
-        if (drawSlice(f.tsNs, col, label, i == app.frameIndex)) {
+        if (DrawTimelineSlice(row, f.tsNs, col, label, i == app.frameIndex)) {
           hoverFrameIdx = i;
           if (rowClicked)
             anyTimelineClicked = true;
         }
       }
     } else {
-      ImU32 col = pidColor(tr.pid);
+      ImU32 col = PidTrackColor(tr.pid);
       for (int i = 0; i < static_cast<int>(txns.size()); i++) {
-        const auto &t = txns[i];
+        const layerviewer::CapturedTransaction &t = txns[i];
         if (t.pid != tr.pid)
           continue;
         std::string label =
             t.layerChanges > 0
                 ? android::base::StringPrintf("%dL", t.layerChanges)
                 : std::string();
-        if (drawSlice(t.postTimeNs, col, label,
-                      i == app.selectedTransactionIdx)) {
+        if (DrawTimelineSlice(row, t.postTimeNs, col, label,
+                              i == app.selectedTransactionIdx)) {
           hoverTxnIdx = i;
           if (rowClicked)
             anyTimelineClicked = true;
@@ -1604,23 +1630,17 @@ void DrawTimeline(AppState &app) {
   // Pixel offset of the mouse into the timeline cell (clamped to its
   // width). Used as the zoom anchor so the virtual-x under the cursor
   // stays put through a zoom.
-  auto mouseCellX = [&]() {
-    return std::clamp(mouse.x - timelineCellLeft, 0.f, timelineCellW);
-  };
+  const float mouseCellX =
+      std::clamp(mouse.x - timelineCellLeft, 0.f, timelineCellW);
 
   if (anyTimelineHovered) {
     float wheelY = io.MouseWheel;
     float wheelX = io.MouseWheelH;
     bool zoomMod = io.KeyShift || io.KeyCtrl || io.KeySuper;
     if (wheelY != 0.f && zoomMod) {
-      float oldZoom = app.timelineZoom;
-      float newZoom = std::clamp(oldZoom * std::pow(1.15f, wheelY), 1.f, 500.f);
-      if (newZoom != oldZoom) {
-        float anchorPx = mouseCellX();
-        float virtAtMouse = anchorPx + scrollX;
-        app.timelineZoom = newZoom;
-        app.timelineScrollX = virtAtMouse * (newZoom / oldZoom) - anchorPx;
-      }
+      float newZoom =
+          std::clamp(app.timelineZoom * std::pow(1.15f, wheelY), 1.f, 500.f);
+      ZoomTimeline(newZoom, mouseCellX, app.timelineZoom, app.timelineScrollX);
     } else if (wheelY != 0.f || wheelX != 0.f) {
       app.timelineScrollX -= (wheelX + wheelY) * 30.f;
     }
@@ -1646,24 +1666,22 @@ void DrawTimeline(AppState &app) {
     const float dt = io.DeltaTime;
     const float kPanPxPerSec = 900.f;
     const float kZoomFactorPerSec = 3.5f;
-    auto zoomAt = [&](float factor) {
-      float old = app.timelineZoom;
-      float nz = std::clamp(old * factor, 1.f, 500.f);
-      if (nz == old)
-        return;
-      float anchorPx = anyTimelineHovered ? mouseCellX() : timelineCellW * 0.5f;
-      float virtAtAnchor = anchorPx + scrollX;
-      app.timelineZoom = nz;
-      app.timelineScrollX = virtAtAnchor * (nz / old) - anchorPx;
-    };
+    const float keyAnchorPx =
+        anyTimelineHovered ? mouseCellX : timelineCellW * 0.5f;
     if (ImGui::IsKeyDown(ImGuiKey_A))
       app.timelineScrollX -= kPanPxPerSec * dt;
     if (ImGui::IsKeyDown(ImGuiKey_D))
       app.timelineScrollX += kPanPxPerSec * dt;
-    if (ImGui::IsKeyDown(ImGuiKey_W))
-      zoomAt(std::pow(kZoomFactorPerSec, dt));
-    if (ImGui::IsKeyDown(ImGuiKey_S))
-      zoomAt(std::pow(1.f / kZoomFactorPerSec, dt));
+    if (ImGui::IsKeyDown(ImGuiKey_W)) {
+      float nz = std::clamp(app.timelineZoom * std::pow(kZoomFactorPerSec, dt),
+                            1.f, 500.f);
+      ZoomTimeline(nz, keyAnchorPx, app.timelineZoom, app.timelineScrollX);
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_S)) {
+      float nz = std::clamp(
+          app.timelineZoom * std::pow(1.f / kZoomFactorPerSec, dt), 1.f, 500.f);
+      ZoomTimeline(nz, keyAnchorPx, app.timelineZoom, app.timelineScrollX);
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
       app.frameIndex = std::max(0, app.frameIndex - 1);
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
